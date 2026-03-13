@@ -1093,11 +1093,18 @@ When implementing Elytro wallet interactions, ensure:
 
 ## Update / Upgrade
 
-The CLI includes a built-in update mechanism. **Agents should check for updates
-at the start of every session** (or at least daily) and inform the user when a
-newer version is available.
+**Agents should check the installed version at the start of every session** and
+inform the user when a newer version is available.
 
-### `elytro update check`
+### `elytro --version` (v0.4.0+)
+
+```bash
+elytro --version
+```
+
+Prints the currently installed version and exits.
+
+### `elytro update check` (v0.4.0+)
 
 ```bash
 elytro update check
@@ -1109,10 +1116,10 @@ Read-only version check. No side effects — safe to run unconditionally.
 
 ```json
 {
-  "currentVersion": "0.3.0",
-  "latestVersion": "0.4.0",
+  "currentVersion": "0.4.0",
+  "latestVersion": "0.5.0",
   "updateAvailable": true,
-  "upgradeCommand": "npm install -g @elytro/cli@0.4.0"
+  "upgradeCommand": "npm install -g @elytro/cli@0.5.0"
 }
 ```
 
@@ -1120,13 +1127,13 @@ Read-only version check. No side effects — safe to run unconditionally.
 
 ```json
 {
-  "currentVersion": "0.4.0",
-  "latestVersion": "0.4.0",
+  "currentVersion": "0.5.0",
+  "latestVersion": "0.5.0",
   "updateAvailable": false
 }
 ```
 
-### `elytro update` / `elytro upgrade`
+### `elytro update` / `elytro upgrade` (v0.4.0+)
 
 ```bash
 elytro update
@@ -1140,29 +1147,29 @@ package manager (npm, yarn, pnpm, bun) from the environment.
 
 ```json
 {
-  "previousVersion": "0.3.0",
-  "currentVersion": "0.4.0",
+  "previousVersion": "0.4.0",
+  "currentVersion": "0.5.0",
   "updateAvailable": false,
   "packageManager": "npm"
 }
 ```
 
-### `elytro --version`
-
-```bash
-elytro --version
-```
-
-Prints the currently installed version and exits.
-
 ### Agent Update Protocol
 
-1. At the start of a session, run `elytro update check`.
-2. Parse the JSON result and check `updateAvailable`.
-3. If `true`, inform the user: _"Elytro CLI v{currentVersion} is installed but
-   v{latestVersion} is available. Run `elytro update` to upgrade."_
-4. Do **not** auto-upgrade without user consent — the agent should recommend the
-   update and wait for approval before running `elytro update`.
+1. Run `elytro --version` to detect the installed version.
+2. If the command **succeeds** (v0.4.0+), use `elytro update check` to check for
+   updates, then `elytro update` to upgrade if the user approves.
+3. If `--version` **fails** with an unknown-command/flag error, the user is on
+   v0.3.x or earlier which lacks both `--version` and `update`. Guide them to
+   upgrade manually:
+   ```bash
+   npm install -g @elytro/cli@latest
+   # or: pnpm add -g @elytro/cli@latest / yarn global add @elytro/cli@latest / bun add -g @elytro/cli@latest
+   ```
+   Inform the user: _"Your Elytro CLI version does not support auto-update.
+   Please run the command above to upgrade to the latest version."_
+4. Do **not** auto-upgrade without user consent — recommend the update and wait
+   for approval before proceeding.
 
 ---
 
