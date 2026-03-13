@@ -1,12 +1,14 @@
-import { Command } from 'commander';
-import { createAppContext } from './context';
-import { registerInitCommand } from './commands/init';
-import { registerAccountCommand } from './commands/account';
-import { registerTxCommand } from './commands/tx';
-import { registerQueryCommand } from './commands/query';
-import { registerSecurityCommand } from './commands/security';
-import { registerConfigCommand } from './commands/config';
-import { outputError, sanitizeErrorMessage } from './utils/display';
+import { Command } from "commander";
+import { createAppContext } from "./context";
+import { registerInitCommand } from "./commands/init";
+import { registerAccountCommand } from "./commands/account";
+import { registerTxCommand } from "./commands/tx";
+import { registerQueryCommand } from "./commands/query";
+import { registerSecurityCommand } from "./commands/security";
+import { registerConfigCommand } from "./commands/config";
+import { registerUpdateCommand } from "./commands/update";
+import { outputError, sanitizeErrorMessage } from "./utils/display";
+import { VERSION } from "./version";
 
 /**
  * Elytro CLI entry point.
@@ -21,10 +23,13 @@ import { outputError, sanitizeErrorMessage } from './utils/display';
 const program = new Command();
 
 program
-  .name('elytro')
-  .description('Elytro — ERC-4337 Smart Account Wallet CLI')
-  .version('0.0.1')
-  .addHelpText('after', '\nLearn how to use Elytro skills: https://github.com/Elytro-eth/skills\n');
+  .name("elytro")
+  .description("Elytro — ERC-4337 Smart Account Wallet CLI")
+  .version(VERSION)
+  .addHelpText(
+    "after",
+    "\nLearn how to use Elytro skills: https://github.com/Elytro-eth/skills\n",
+  );
 
 async function main(): Promise<void> {
   let ctx: Awaited<ReturnType<typeof createAppContext>> | null = null;
@@ -37,6 +42,7 @@ async function main(): Promise<void> {
     registerQueryCommand(program, ctx);
     registerSecurityCommand(program, ctx);
     registerConfigCommand(program, ctx);
+    registerUpdateCommand(program);
 
     // Phase 4: registerCallCommand(program, ctx);
     // Phase 4: registerRecoveryCommand(program, ctx);

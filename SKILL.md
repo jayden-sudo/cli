@@ -41,15 +41,16 @@ parse output deterministically, and handle errors without human intervention.
 
 ## RULES — Read Before Every Action
 
-1. **Never guess on-chain data.** Always run the appropriate `elytro query` command to fetch balances, transaction status, token holdings, etc. Do NOT infer or assume values.
-2. **Never auto-confirm interactive prompts.** When any command outputs `(y/N)` or similar, STOP and present the user with a confirmation choice. The agent must wait for explicit user approval before proceeding. Never pipe `y` into stdin.
-3. **Chain IDs accept hex or decimal.** Common values: Ethereum mainnet = `1`, Sepolia = `11155111` (`0xaa36a7`), OP Sepolia = `11155420`, Base = `8453`, Arbitrum = `42161`. Both formats work in `--chain`.
-4. **`value` in tx specs is always in ETH**, not wei. Example: `value:0.001` means 0.001 ETH.
-5. **`data` field must be valid hex.** Use `0x` for plain ETH transfers (no calldata). For contract calls, provide the full hex-encoded calldata with `0x` prefix and even length.
-6. **Smart accounts must be deployed before sending transactions.** Check `elytro account info <account>` → `"deployed": true` before sending. If not deployed, run `elytro account activate <account>` first.
-7. **Use alias or address interchangeably** wherever `<account>` appears. Both are accepted by all commands.
-8. **Always parse structured JSON output.** Every command returns `{ "success": true/false, ... }`. Parse stdout as JSON and check the `success` field. Never regex-match free-form text.
-9. **Security is non-negotiable.** Never send transactions from an account without `hookInstalled: true` and `emailVerified: true`. See the Security-First section below.
+1. **Check for updates at session start.** Run `elytro update check` and inform the user if `updateAvailable` is `true`. Do not auto-upgrade — ask first.
+2. **Never guess on-chain data.** Always run the appropriate `elytro query` command to fetch balances, transaction status, token holdings, etc. Do NOT infer or assume values.
+3. **Never auto-confirm interactive prompts.** When any command outputs `(y/N)` or similar, STOP and present the user with a confirmation choice. The agent must wait for explicit user approval before proceeding. Never pipe `y` into stdin.
+4. **Chain IDs accept hex or decimal.** Common values: Ethereum mainnet = `1`, Sepolia = `11155111` (`0xaa36a7`), OP Sepolia = `11155420`, Base = `8453`, Arbitrum = `42161`. Both formats work in `--chain`.
+5. **`value` in tx specs is always in ETH**, not wei. Example: `value:0.001` means 0.001 ETH.
+6. **`data` field must be valid hex.** Use `0x` for plain ETH transfers (no calldata). For contract calls, provide the full hex-encoded calldata with `0x` prefix and even length.
+7. **Smart accounts must be deployed before sending transactions.** Check `elytro account info <account>` → `"deployed": true` before sending. If not deployed, run `elytro account activate <account>` first.
+8. **Use alias or address interchangeably** wherever `<account>` appears. Both are accepted by all commands.
+9. **Always parse structured JSON output.** Every command returns `{ "success": true/false, ... }`. Parse stdout as JSON and check the `success` field. Never regex-match free-form text.
+10. **Security is non-negotiable.** Never send transactions from an account without `hookInstalled: true` and `emailVerified: true`. See the Security-First section below.
 
 ---
 
@@ -1043,6 +1044,7 @@ elytro query tokens my-wallet
 
 When implementing Elytro wallet interactions, ensure:
 
+- [ ] **Version check**: Run `elytro update check` at session start. Notify user if an update is available.
 - [ ] **Real-time data fetching**: Always run `elytro query balance`, `elytro account info`, etc. before making decisions. Never use stale or assumed values.
 - [ ] **Security verification**: Before any `tx send`, confirm `hookInstalled: true` and `emailVerified: true`.
 - [ ] **JSON parsing**: All command output is structured JSON. Parse `stdout` and check `success` field.
@@ -1086,6 +1088,81 @@ When implementing Elytro wallet interactions, ensure:
 | "Insufficient balance"       | Value exceeds account balance           | Fund the account first                  |
 | JSON-RPC error code `-32001` | Resource not found on-chain             | Check hash/address, try different chain |
 | "AA21" in error              | UserOp simulation failed                | Usually a balance or nonce issue        |
+
+---
+
+## Update / Upgrade
+
+The CLI includes a built-in update mechanism. **Agents should check for updates
+at the start of every session** (or at least daily) and inform the user when a
+newer version is available.
+
+### `elytro update check`
+
+```bash
+elytro update check
+```
+
+Read-only version check. No side effects — safe to run unconditionally.
+
+**Success result (update available):**
+
+```json
+{
+  "currentVersion": "0.3.0",
+  "latestVersion": "0.4.0",
+  "updateAvailable": true,
+  "upgradeCommand": "npm install -g @elytro/cli@0.4.0"
+}
+```
+
+**Success result (up to date):**
+
+```json
+{
+  "currentVersion": "0.4.0",
+  "latestVersion": "0.4.0",
+  "updateAvailable": false
+}
+```
+
+### `elytro update` / `elytro upgrade`
+
+```bash
+elytro update
+elytro upgrade   # alias
+```
+
+Checks for a newer version and installs it automatically. Auto-detects the
+package manager (npm, yarn, pnpm, bun) from the environment.
+
+**Success result:**
+
+```json
+{
+  "previousVersion": "0.3.0",
+  "currentVersion": "0.4.0",
+  "updateAvailable": false,
+  "packageManager": "npm"
+}
+```
+
+### `elytro --version`
+
+```bash
+elytro --version
+```
+
+Prints the currently installed version and exits.
+
+### Agent Update Protocol
+
+1. At the start of a session, run `elytro update check`.
+2. Parse the JSON result and check `updateAvailable`.
+3. If `true`, inform the user: _"Elytro CLI v{currentVersion} is installed but
+   v{latestVersion} is available. Run `elytro update` to upgrade."_
+4. Do **not** auto-upgrade without user consent — the agent should recommend the
+   update and wait for approval before running `elytro update`.
 
 ---
 
