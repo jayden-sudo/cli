@@ -50,6 +50,16 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
         return;
       }
 
+      // Validate chain is supported
+      const chainConfig = ctx.chain.chains.find((c) => c.id === chainId);
+      if (!chainConfig) {
+        const supported = ctx.chain.chains.map((c) => `${c.id} (${c.name})`);
+        outputError(ERR_INVALID_PARAMS, `Chain ${chainId} is not supported.`, {
+          supportedChains: supported,
+        });
+        return;
+      }
+
       // Validate --daily-limit if provided
       let dailyLimitUsd: number | undefined;
       if (opts.dailyLimit !== undefined) {
@@ -72,12 +82,9 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
       const spinner = ora('Creating smart account...').start();
       try {
         // Initialize SDK for the target chain before address calculation
-        const chainConfig = ctx.chain.chains.find((c) => c.id === chainId);
-        const chainName = chainConfig?.name ?? String(chainId);
-        if (chainConfig) {
-          await ctx.sdk.initForChain(chainConfig);
-          ctx.walletClient.initForChain(chainConfig);
-        }
+        const chainName = chainConfig.name;
+        await ctx.sdk.initForChain(chainConfig);
+        ctx.walletClient.initForChain(chainConfig);
 
         const accountInfo = await ctx.account.createAccount(chainId, opts.alias, securityIntent);
 
@@ -409,6 +416,28 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
         });
       } catch (err) {
         spinner.stop();
+        outputError(ERR_INTERNAL, (err as Error).message);
+      }
+    });
+
+  // ─── rename ──────────────────────────────────────────────────
+
+  account
+    .command('rename')
+    .description('Rename an account alias')
+    .argument('<account>', 'Current alias or address')
+    .argument('<newAlias>', 'New alias')
+    .action(async (target: string, newAlias: string) => {
+      try {
+        const renamed = await ctx.account.renameAccount(target, newAlias);
+        const chainConfig = ctx.chain.chains.find((c) => c.id === renamed.chainId);
+        outputResult({
+          alias: renamed.alias,
+          address: renamed.address,
+          chain: chainConfig?.name ?? String(renamed.chainId),
+          chainId: renamed.chainId,
+        });
+      } catch (err) {
         outputError(ERR_INTERNAL, (err as Error).message);
       }
     });

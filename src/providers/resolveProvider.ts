@@ -1,40 +1,72 @@
 import type { SecretProvider } from './secretProvider';
-import { KeychainProvider } from './keychainProvider';
+import { KeyringProvider } from './keyringProvider';
+import { FileProvider } from './fileProvider';
 import { EnvVarProvider } from './envVarProvider';
 
 /**
  * Auto-detect the best available SecretProvider.
  *
- * Resolution order:
- *   1. macOS Keychain — primary, zero-interaction, persistent
- *   2. ELYTRO_VAULT_SECRET env var — fallback for Linux/container/CI
- *   3. null — no provider available
+ * Resolution order (most secure → least secure):
+ *
+ *   1. KeyringProvider (OS credential store)
+ *      macOS: Keychain | Windows: Credential Manager | Linux: Secret Service
+ *      → Best option. Encrypted at rest, managed by OS, separate security domain.
+ *
+ *   2. FileProvider (permission-guarded file)
+ *      ~/.elytro/.vault-key, chmod 0600
+ *      → Linux headless fallback (servers, containers, WSL without desktop).
+ *        Same security model as SSH private keys. Only activates on Linux
+ *        when no Secret Service provider is running.
+ *
+ *   3. EnvVarProvider (CI-only, explicit opt-in)
+ *      ELYTRO_VAULT_SECRET + ELYTRO_ALLOW_ENV=1
+ *      → Strictly for CI pipelines and Docker. Requires explicit opt-in flag.
+ *        Known /proc/PID/environ leak. Not a general-purpose fallback.
  *
  * Returns separate providers for init (store) and runtime (load):
  *   - initProvider: must support store() — only persistent providers
- *   - loadProvider: must support load() — any provider
+ *   - loadProvider: must support load() — any available provider
  *
- * macOS Keychain always takes priority even if env var is set.
+ * The OS credential store always takes priority even if env var is set.
  * This prevents a rogue process from injecting ELYTRO_VAULT_SECRET
- * to override the Keychain-stored key on macOS.
+ * to override the keychain-stored key.
  */
 export async function resolveProvider(): Promise<{
   initProvider: SecretProvider | null;
   loadProvider: SecretProvider | null;
 }> {
-  const keychainProvider = new KeychainProvider();
+  const keyringProvider = new KeyringProvider();
+  const fileProvider = new FileProvider();
   const envProvider = new EnvVarProvider();
 
-  // Init (store): only persistent providers qualify
-  const initProvider = (await keychainProvider.available()) ? keychainProvider : null;
-
-  // Load: Keychain first (macOS source of truth), env var as fallback
-  let loadProvider: SecretProvider | null = null;
-  if (await keychainProvider.available()) {
-    loadProvider = keychainProvider;
-  } else if (await envProvider.available()) {
-    loadProvider = envProvider;
+  // ── Priority 1: OS credential store (all platforms) ──
+  if (await keyringProvider.available()) {
+    return {
+      initProvider: keyringProvider,
+      loadProvider: keyringProvider,
+    };
   }
 
-  return { initProvider, loadProvider };
+  // ── Priority 2: Permission-guarded file (Linux headless) ──
+  // Only use FileProvider on Linux. On macOS/Windows the OS keychain should
+  // always be reachable — if it isn't, something is seriously wrong and we
+  // should not silently fall through to weaker storage.
+  if (process.platform === 'linux' && (await fileProvider.available())) {
+    return {
+      initProvider: fileProvider,
+      loadProvider: fileProvider,
+    };
+  }
+
+  // ── Priority 3: Env var (CI-only, explicit opt-in) ──
+  // EnvVarProvider is load-only, so it cannot be used for init.
+  if (await envProvider.available()) {
+    return {
+      initProvider: null, // Cannot store via env var
+      loadProvider: envProvider,
+    };
+  }
+
+  // ── No provider available ──
+  return { initProvider: null, loadProvider: null };
 }

@@ -1,4 +1,5 @@
 export type { SecretProvider } from './secretProvider';
-export { KeychainProvider } from './keychainProvider';
+export { KeyringProvider } from './keyringProvider';
+export { FileProvider } from './fileProvider';
 export { EnvVarProvider } from './envVarProvider';
 export { resolveProvider } from './resolveProvider';

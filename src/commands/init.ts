@@ -11,8 +11,10 @@ import { outputResult, outputError, sanitizeErrorMessage } from '../utils/displa
  * Generates a 256-bit vault key and an EOA signing key.
  *
  * Key storage (auto-detected):
- *   - macOS: stored in Keychain (zero-interaction, encrypted at rest)
- *   - Other: displayed once for manual storage, injected via ELYTRO_VAULT_SECRET
+ *   - macOS:          Keychain (via OS credential store)
+ *   - Windows:        Credential Manager (via OS credential store)
+ *   - Linux desktop:  Secret Service / GNOME Keyring / KWallet
+ *   - Linux headless:  ~/.elytro/.vault-key (chmod 0600)
  *
  * No password required — key management is handled by the SecretProvider.
  */
@@ -64,7 +66,11 @@ export function registerInitCommand(program: Command, ctx: AppContext): void {
           secretProvider: providerName,
           ...(vaultSecretB64 ? { vaultSecret: vaultSecretB64 } : {}),
           ...(vaultSecretB64
-            ? { hint: 'Save ELYTRO_VAULT_SECRET — it will NOT be shown again.' }
+            ? {
+                hint:
+                  'No persistent secret provider available. Save this vault key securely — it will NOT be shown again.\n' +
+                  'For CI: set ELYTRO_VAULT_SECRET=<key> and ELYTRO_ALLOW_ENV=1.',
+              }
             : {}),
           nextStep: 'Run `elytro account create --chain <chainId>` to create your first smart account.',
         });

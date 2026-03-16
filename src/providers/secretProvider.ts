@@ -5,19 +5,15 @@
  * to achieve domain separation: the encrypted vault and the key that
  * decrypts it live in different security domains.
  *
- * Resolution order (macOS-first):
- *   1. macOS Keychain (KeychainProvider)  — primary, zero-interaction
- *   2. ELYTRO_VAULT_SECRET env var (EnvVarProvider) — fallback for Linux/container/CI
- *   3. Error: no provider available
+ * Resolution order (most secure → least secure):
+ *   1. KeyringProvider (OS credential store: Keychain / Credential Manager / Secret Service)
+ *   2. FileProvider (permission-guarded file, Linux headless only)
+ *   3. EnvVarProvider (CI-only, explicit opt-in via ELYTRO_ALLOW_ENV=1)
  *
- * Built now:
- *   - KeychainProvider (macOS `security` CLI)
- *   - EnvVarProvider (load-only, for runtime injection)
- *
- * Future extension points (add class + one branch in resolveProvider):
- *   - LinuxSecretServiceProvider (libsecret / GNOME Keyring)
- *   - OpenClawApiProvider (SecretRef API for headless agent init)
- *   - FileProvider (tmpfs-mounted file, Docker Secrets)
+ * Built providers:
+ *   - KeyringProvider (@napi-rs/keyring — macOS, Windows, Linux desktop)
+ *   - FileProvider (~/.elytro/.vault-key, chmod 0600 — Linux headless)
+ *   - EnvVarProvider (ELYTRO_VAULT_SECRET — CI/container injection)
  */
 
 export interface SecretProvider {
@@ -29,7 +25,7 @@ export interface SecretProvider {
 
   /**
    * Store a secret. Called once during `elytro init`.
-   * Provider decides the storage mechanism (Keychain, API, etc.).
+   * Provider decides the storage mechanism (Keychain, file, etc.).
    */
   store(secret: Uint8Array): Promise<void>;
 

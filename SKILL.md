@@ -2,13 +2,14 @@
 name: elytro
 description: >
   Elytro — security-first ERC-4337 smart account wallet CLI for AI agents.
-  On-chain 2FA, configurable spending limits, and macOS Keychain-backed vault.
+  On-chain 2FA, configurable spending limits, and cross-platform OS keychain-backed vault
+  (macOS Keychain, Windows Credential Manager, Linux Secret Service).
   Send ETH, ERC-20 tokens, and batch transactions via UserOperations on Ethereum,
-  Optimism, and Arbitrum. Account abstraction wallet with gas sponsorship,
+  Optimism, Arbitrum, and Base. Account abstraction wallet with gas sponsorship,
   counterfactual deployment, social recovery, and guardian management.
   For token swaps, combine this skill with `defi/uniswap` for planning and `defi/elytro` for execution.
-  for programmatic consumption by agents and MCP integrations.
-version: 0.4.0
+  For programmatic consumption by agents and MCP integrations.
+version: 0.5.1
 homepage: https://elytro.com
 metadata:
   openclaw:
@@ -16,10 +17,10 @@ metadata:
       bins:
         - elytro
       node: ">=24.0.0"
-      # No env vars required on macOS — vault key is managed by Keychain.
+      # No env vars required — vault key is managed by OS credential store.
     emoji: "🔐"
     homepage: https://github.com/Elytro-eth/skills
-    os: ["macos"]
+    os: ["macos", "windows", "linux"]
     install:
       - id: npm
         kind: npm
@@ -44,7 +45,7 @@ parse output deterministically, and handle errors without human intervention.
 1. **Check for updates at session start.** Run `elytro update check` and inform the user if `updateAvailable` is `true`. Do not auto-upgrade — ask first.
 2. **Never guess on-chain data.** Always run the appropriate `elytro query` command to fetch balances, transaction status, token holdings, etc. Do NOT infer or assume values.
 3. **Never auto-confirm interactive prompts.** When any command outputs `(y/N)` or similar, STOP and present the user with a confirmation choice. The agent must wait for explicit user approval before proceeding. Never pipe `y` into stdin.
-4. **Chain IDs accept hex or decimal.** Common values: Ethereum mainnet = `1`, Sepolia = `11155111` (`0xaa36a7`), OP Sepolia = `11155420`, Base = `8453`, Arbitrum = `42161`. Both formats work in `--chain`.
+4. **Chain IDs accept hex or decimal.** Supported values: Ethereum mainnet = `1`, Optimism = `10`, Arbitrum = `42161`, Base = `8453`, Sepolia = `11155111` (`0xaa36a7`), OP Sepolia = `11155420`. Both formats work in `--chain`. Unsupported chain IDs are rejected with an error listing all valid options.
 5. **`value` in tx specs is always in ETH**, not wei. Example: `value:0.001` means 0.001 ETH.
 6. **`data` field must be valid hex.** Use `0x` for plain ETH transfers (no calldata). For contract calls, provide the full hex-encoded calldata with `0x` prefix and even length.
 7. **Smart accounts must be deployed before sending transactions.** Check `elytro account info <account>` → `"deployed": true` before sending. If not deployed, run `elytro account activate <account>` first.
@@ -157,46 +158,63 @@ Spinners and interactive prompts go to **stderr** — never mix into stdout.
 
 ## Secret Management
 
-### Vault Key (macOS Keychain — zero configuration)
+### Vault Key (Cross-Platform OS Credential Store — zero configuration)
 
 The vault key is a 256-bit random key that decrypts the local keyring vault.
 
-On macOS, `elytro init` generates the vault key and stores it in the **system
-Keychain** automatically. Every subsequent CLI invocation loads it from Keychain
-with no env vars, no SecretRef, and no user interaction. This is the only
-officially supported platform.
+`elytro init` generates the vault key and stores it in the **OS credential store**
+automatically. Every subsequent CLI invocation loads it from the credential store
+with no env vars, no SecretRef, and no user interaction.
 
 **The user never sees, copies, or configures the vault key.** It is fully managed
 by the OS.
 
+#### Platform Backends
+
+| Platform       | Backend                                        | Provider Name               |
+| -------------- | ---------------------------------------------- | --------------------------- |
+| macOS          | Keychain (Security.framework)                  | `macos-keychain`            |
+| Windows        | Credential Manager (DPAPI)                     | `windows-credential-manager`|
+| Linux desktop  | Secret Service API (GNOME Keyring / KWallet)   | `linux-secret-service`      |
+| Linux headless | Permission-guarded file (`~/.elytro/.vault-key`, chmod 0600) | `file-protected` |
+| CI / Container | `ELYTRO_VAULT_SECRET` env var (explicit opt-in) | `env-var`                  |
+
+The provider is auto-detected at runtime in priority order: OS credential store →
+file (Linux only) → env var (requires `ELYTRO_ALLOW_ENV=1`).
+
 #### Security Properties
 
 - **Domain separation**: The encrypted vault (`keyring.json`) lives on disk; the
-  decryption key lives in Keychain. Copying `~/.elytro/` to another machine is
-  useless without the Keychain entry.
-- **OS-level protection**: Keychain is encrypted with the user's login password and
-  locked when the user is logged out or the machine is powered off.
+  decryption key lives in the OS credential store. Copying `~/.elytro/` to another
+  machine is useless without the credential store entry.
+- **OS-level protection**: Credential store is encrypted with the user's login
+  password and locked when the user is logged out or the machine is powered off.
 - **Zero-fill**: The raw key buffer is zeroed in memory after the keyring is unlocked.
 
-### Non-macOS Fallback (not recommended)
+### Linux Headless Fallback (servers, containers, WSL)
 
-> **Warning**: Running on Windows, Linux or in containers weakens the security model.
-> The vault key must be injected as an environment variable (`ELYTRO_VAULT_SECRET`),
-> which is exposed to `/proc/PID/environ`, inherited by child processes before
-> consume-once scrubbing, and lacks hardware-backed protection. Use at your own risk.
-> **Users must be fully briefed on these limitations.**
-> On-chain SecurityHook (2FA + spending limits) is strongly recommended as
-> compensating control.
+When no Secret Service provider is available (no GNOME Keyring, no KWallet, no
+D-Bus session), the CLI falls back to a **permission-guarded file** at
+`~/.elytro/.vault-key` with `chmod 0600` (owner read/write only).
 
-If you must run on Non-macOS:
+This follows the SSH model — the key is not encrypted at rest but is protected
+by filesystem ACLs. The CLI **refuses to load the file if permissions are wider
+than 0600**, printing the exact fix command. This is strictly better than env var
+injection: no `/proc/PID/environ` leak, persists across invocations, and supports
+permission drift detection.
 
-1. `elytro init` returns `vaultSecret` in the JSON result.
-2. The agent captures this value and stores it in SecretRef.
-3. On subsequent runs, OpenClaw injects it as an env var. The CLI reads it once
-   and immediately deletes it from `process.env` (consume-once).
+### CI / Container Injection (explicit opt-in only)
+
+> **Warning**: The env var provider is for CI pipelines and Docker containers only.
+> It requires **both** `ELYTRO_VAULT_SECRET` and `ELYTRO_ALLOW_ENV=1` to be set.
+> Without the opt-in flag, the env var is ignored. This prevents accidental use
+> as a general-purpose fallback.
+>
+> Known limitation: `/proc/PID/environ` on Linux retains the original value for
+> the entire process lifetime (kernel-level, cannot be scrubbed).
 
 ```jsonc
-// openclaw.json — only needed on non-macOS
+// openclaw.json — only needed for CI/container environments
 {
   "skills": {
     "entries": {
@@ -205,12 +223,16 @@ If you must run on Non-macOS:
           "ELYTRO_VAULT_SECRET": {
             "source": "env",
             "provider": "default",
-            "id": "ELYTRO_VAULT_SECRET",
+            "id": "ELYTRO_VAULT_SECRET"
           },
-        },
-      },
-    },
-  },
+          "ELYTRO_ALLOW_ENV": {
+            "source": "literal",
+            "value": "1"
+          }
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -234,7 +256,7 @@ An agent running against a fresh `~/.elytro/` must execute this sequence exactly
 
 ```bash
 # Step 1: Initialize wallet
-# Vault key is auto-stored in macOS Keychain. No secrets to manage.
+# Vault key is auto-stored in OS credential store. No secrets to manage.
 elytro init
 
 # Step 2: Create a smart account WITH security enabled
@@ -287,12 +309,17 @@ Generates a 256-bit vault key and an EOA signing key.
 {
   "status": "initialized",
   "dataDir": "~/.elytro",
-  "secretProvider": "KeychainProvider",
+  "secretProvider": "macos-keychain",
   "nextStep": "Run `elytro account create --chain <chainId>` ..."
 }
 ```
 
-On non-macOS, result also includes `vaultSecret` (base64) — save it immediately.
+The `secretProvider` field indicates which backend was used: `macos-keychain`,
+`windows-credential-manager`, `linux-secret-service`, or `file-protected`.
+
+If no persistent provider is available (rare — CI without opt-in), the result
+also includes `vaultSecret` (base64) — save it immediately and configure
+`ELYTRO_VAULT_SECRET` + `ELYTRO_ALLOW_ENV=1` for subsequent runs.
 
 If already initialized: `{ "status": "already_initialized", "dataDir": "..." }`.
 
@@ -311,7 +338,11 @@ elytro account create -c <chainId> [-a <name>] [-e <email>] [-l <usd>]
 - `-e, --email` (**required in practice**): Email for 2FA OTP. Stored as security intent.
 - `-l, --daily-limit` (**required in practice**): Daily spending limit in USD.
 
-**Supported chains**: 1 (Ethereum), 10 (Optimism), 42161 (Arbitrum), 11155111 (Sepolia), 11155420 (OP Sepolia).
+**Supported chains**: 1 (Ethereum), 10 (Optimism), 42161 (Arbitrum), 8453 (Base), 11155111 (Sepolia), 11155420 (OP Sepolia).
+
+**Chain validation**: If the `--chain` value is not in the supported list, the CLI
+returns an error with the full list of supported chains. This prevents silent
+misconfiguration with unsupported chain IDs.
 
 > **Rule: ALWAYS pass `--email` and `--daily-limit`.** The flags are technically
 > optional to allow edge-case testing, but in any real workflow, creating an account
@@ -433,6 +464,31 @@ If security is pending (pre-activate): includes `securityIntent` instead of `sec
 
 **Use this command to verify security status before transactions.** If `securityStatus`
 is absent or `hookInstalled` is false, the account is unprotected.
+
+#### `elytro account rename`
+
+```bash
+elytro account rename <alias|address> <newAlias>
+```
+
+Renames an account's alias. Both arguments are required. The new alias must be
+unique (case-insensitive check).
+
+**Success result:**
+
+```json
+{
+  "alias": "my-main-wallet",
+  "address": "0x...",
+  "chain": "OP Sepolia",
+  "chainId": 11155420
+}
+```
+
+**Error cases:**
+
+- Account not found: `"Account \"old-name\" not found."`
+- Alias conflict: `"Alias \"taken-name\" is already taken by 0x..."`
 
 #### `elytro account switch`
 
@@ -1015,6 +1071,9 @@ elytro account switch hot-wallet
 elytro tx send --tx "to:0xAddr,value:0.01"
 elytro account switch cold-storage
 elytro query balance
+
+# Rename an account for clarity
+elytro account rename hot-wallet daily-spending
 ```
 
 ### Pattern 6: Token Swap via Uniswap
@@ -1077,17 +1136,21 @@ When implementing Elytro wallet interactions, ensure:
 
 ## Error Recovery
 
-| Error Pattern                | Cause                                   | Recovery                                |
-| ---------------------------- | --------------------------------------- | --------------------------------------- |
-| "Wallet not initialized"     | No `~/.elytro/keyring.json`             | Run `elytro init`                       |
-| "Keyring is locked"          | Missing vault key (Keychain or env var) | Check Keychain entry or SecretRef       |
-| "Vault key not found"        | Provider available but key missing      | Re-run `elytro init` or check SecretRef |
-| "Wallet unlock failed"       | Wrong vault key                         | Verify the correct key in SecretRef     |
-| "No accounts found"          | No account created yet                  | Run `elytro account create`             |
-| "Account not deployed"       | Trying to send tx before activation     | Run `elytro account activate`           |
-| "Insufficient balance"       | Value exceeds account balance           | Fund the account first                  |
-| JSON-RPC error code `-32001` | Resource not found on-chain             | Check hash/address, try different chain |
-| "AA21" in error              | UserOp simulation failed                | Usually a balance or nonce issue        |
+| Error Pattern                      | Cause                                   | Recovery                                             |
+| ---------------------------------- | --------------------------------------- | ---------------------------------------------------- |
+| "Wallet not initialized"           | No `~/.elytro/keyring.json`             | Run `elytro init`                                    |
+| "Keyring is locked"                | Missing vault key                       | Check OS credential store or `.vault-key` permissions |
+| "Vault key not found"              | Provider available but key missing      | Re-run `elytro init` or restore credential           |
+| "Wallet unlock failed"             | Wrong vault key                         | Verify correct key in credential store               |
+| "No secret provider available"     | No keychain, file, or env var found     | See platform-specific hint in error message          |
+| "insecure permissions"             | `.vault-key` permissions wider than 0600 | Run `chmod 600 ~/.elytro/.vault-key`                |
+| "Chain N is not supported"         | Invalid `--chain` value                 | Use a supported chain ID from the error output       |
+| "Alias already taken"              | Duplicate alias on rename/create        | Choose a different alias                             |
+| "No accounts found"                | No account created yet                  | Run `elytro account create`                          |
+| "Account not deployed"             | Trying to send tx before activation     | Run `elytro account activate`                        |
+| "Insufficient balance"             | Value exceeds account balance           | Fund the account first                               |
+| JSON-RPC error code `-32001`       | Resource not found on-chain             | Check hash/address, try different chain              |
+| "AA21" in error                    | UserOp simulation failed                | Usually a balance or nonce issue                     |
 
 ---
 
@@ -1178,7 +1241,7 @@ package manager (npm, yarn, pnpm, bun) from the environment.
 - Elytro uses **EIP-4337 (Account Abstraction)** — transactions are submitted as UserOps via a Bundler, not regular EOA transactions. On-chain, all UserOps appear as bundler (0x4337001F) → EntryPoint (0x4337084D) transactions.
 - Sponsored transactions are **gasless by default** when a paymaster is available. The paymaster covers gas fees only, not the transaction's ETH value.
 - The wallet data directory is `~/.elytro/`. No plaintext key files exist on disk.
-- `--chain` accepts both hex (`0xaa36a7`) and decimal (`11155111`) chain IDs.
+- `--chain` accepts both hex (`0xaa36a7`) and decimal (`11155111`) chain IDs. Unsupported values are rejected with an error listing all valid options.
 - `data` field in `--tx` specs must be a valid hex string with `0x` prefix and even length. Use `data:0x` (or omit `data`) for plain ETH transfers.
 - The Security Intent / Status two-phase model ensures SecurityHook is installed atomically during deployment. Intent is temporary (create → activate); Status is persistent (post-activate).
 
@@ -1191,9 +1254,20 @@ package manager (npm, yarn, pnpm, bun) from the environment.
 ├── keyring.json      # AES-GCM encrypted EOA private key vault
 ├── accounts.json     # Account list (alias, address, chainId, index, owner,
 │                     #   deployed, securityIntent?, securityStatus?)
-└── config.json       # Chain config, current chain, API keys (persisted)
+├── config.json       # Chain config, current chain, API keys (persisted)
+└── .vault-key        # (Linux headless only) Permission-guarded vault key, chmod 0600
 ```
 
-No plaintext key files on disk. The vault key lives in macOS Keychain or is injected
-via `ELYTRO_VAULT_SECRET` environment variable. Deleting `~/.elytro/` resets local
-state; on-chain contracts are unaffected.
+No plaintext key files on disk (except `.vault-key` on Linux headless, which is
+permission-restricted). The vault key lives in the OS credential store:
+
+| Platform       | Location                             |
+| -------------- | ------------------------------------ |
+| macOS          | Keychain (`elytro-wallet` service)   |
+| Windows        | Credential Manager (DPAPI-protected) |
+| Linux desktop  | Secret Service (GNOME Keyring / KWallet) |
+| Linux headless | `~/.elytro/.vault-key` (chmod 0600)  |
+| CI / container | `ELYTRO_VAULT_SECRET` env var + `ELYTRO_ALLOW_ENV=1` |
+
+Deleting `~/.elytro/` resets local state; on-chain contracts are unaffected.
+The credential store entry must also be deleted separately (it is not inside `~/.elytro/`).

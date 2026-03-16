@@ -28,7 +28,7 @@ export interface AppContext {
  * Bootstrap all services and return the app context.
  * Called once at CLI startup.
  *
- * If a vault key can be loaded (from Keychain or env var),
+ * If a vault key can be loaded (from OS keychain, file, or env var),
  * the keyring is automatically unlocked.
  * Commands can check keyring.isUnlocked to verify readiness.
  */
@@ -49,7 +49,7 @@ export async function createAppContext(): Promise<AppContext> {
   walletClient.initForChain(defaultChain);
   await sdk.initForChain(defaultChain);
 
-  // Resolve secret provider (macOS Keychain > env var > null)
+  // Resolve secret provider (OS keychain > file > env var > null)
   const { loadProvider } = await resolveProvider();
 
   // Auto-load vault key and unlock keyring
@@ -58,9 +58,7 @@ export async function createAppContext(): Promise<AppContext> {
     if (!loadProvider) {
       throw new Error(
         'Wallet is initialized but no secret provider is available.\n' +
-          (process.platform === 'darwin'
-            ? 'Keychain access failed. Check macOS Keychain permissions.'
-            : 'Set the ELYTRO_VAULT_SECRET environment variable.')
+          noProviderHint()
       );
     }
 
@@ -68,9 +66,8 @@ export async function createAppContext(): Promise<AppContext> {
     if (!vaultKey) {
       throw new Error(
         `Wallet is initialized but vault key not found in ${loadProvider.name}.\n` +
-          (process.platform === 'darwin'
-            ? 'The Keychain item may have been deleted. Re-run `elytro init` to create a new wallet,\nor import a backup with `elytro import`.'
-            : 'Set ELYTRO_VAULT_SECRET to the base64-encoded vault key.')
+          'The credential may have been deleted. Re-run `elytro init` to create a new wallet,\n' +
+          'or import a backup with `elytro import`.'
       );
     }
 
@@ -113,4 +110,21 @@ export async function createAppContext(): Promise<AppContext> {
   }
 
   return { store, keyring, chain, sdk, walletClient, account, secretProvider: loadProvider };
+}
+
+/** Platform-specific hint when no secret provider is available. */
+function noProviderHint(): string {
+  switch (process.platform) {
+    case 'darwin':
+      return 'macOS Keychain access failed. Check Keychain permissions or security settings.';
+    case 'win32':
+      return 'Windows Credential Manager access failed. Run as the same user who initialized the wallet.';
+    default:
+      return (
+        'No secret provider available. Options:\n' +
+        '  1. Install and start a Secret Service provider (GNOME Keyring or KWallet)\n' +
+        '  2. The vault key file (~/.elytro/.vault-key) may have been deleted\n' +
+        '  3. For CI: set ELYTRO_VAULT_SECRET and ELYTRO_ALLOW_ENV=1'
+      );
+  }
 }

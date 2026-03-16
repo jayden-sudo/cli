@@ -147,6 +147,32 @@ export class AccountService {
     return account;
   }
 
+  // ─── Rename ───────────────────────────────────────────────────────
+
+  /**
+   * Rename an account's alias.
+   * @param aliasOrAddress - Current alias or address to identify the account.
+   * @param newAlias       - The new alias. Must be unique.
+   */
+  async renameAccount(aliasOrAddress: string, newAlias: string): Promise<AccountInfo> {
+    const account = this.resolveAccount(aliasOrAddress);
+    if (!account) {
+      throw new Error(`Account "${aliasOrAddress}" not found.`);
+    }
+
+    // Check uniqueness (case-insensitive)
+    const conflict = this.state.accounts.find(
+      (a) => a.alias.toLowerCase() === newAlias.toLowerCase() && a.address !== account.address
+    );
+    if (conflict) {
+      throw new Error(`Alias "${newAlias}" is already taken by ${conflict.address}.`);
+    }
+
+    account.alias = newAlias;
+    await this.persist();
+    return account;
+  }
+
   // ─── Activation ───────────────────────────────────────────────────
 
   /**
