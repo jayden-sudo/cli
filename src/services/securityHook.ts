@@ -748,15 +748,23 @@ export class SecurityHookService {
         if (result.errors && result.errors.length > 0) {
           const ext = result.errors[0].extensions as Record<string, unknown> | undefined;
           if (ext) {
+            const challengeDetails =
+              typeof ext.challenge === 'object' && ext.challenge !== null
+                ? (ext.challenge as Record<string, unknown>)
+                : undefined;
+            const getChallengeValue = (key: string) =>
+              (ext[key] as string | number | undefined) ??
+              (challengeDetails ? (challengeDetails[key] as string | number | undefined) : undefined);
+
             return {
               error: {
                 code: ext.code as string,
-                challengeId: ext.challengeId as string,
-                currentSpendUsdCents: ext.currentSpendUsdCents as number,
-                dailyLimitUsdCents: ext.dailyLimitUsdCents as number,
-                maskedEmail: ext.maskedEmail as string,
-                otpExpiresAt: ext.otpExpiresAt as string,
-                projectedSpendUsdCents: ext.projectedSpendUsdCents as number,
+                challengeId: getChallengeValue('challengeId') as string,
+                currentSpendUsdCents: (ext.currentSpendUsdCents as number) ?? (getChallengeValue('currentSpendUsdCents') as number),
+                dailyLimitUsdCents: (ext.dailyLimitUsdCents as number) ?? (getChallengeValue('dailyLimitUsdCents') as number),
+                maskedEmail: (ext.maskedEmail as string) ?? (getChallengeValue('maskedEmail') as string),
+                otpExpiresAt: (ext.otpExpiresAt as string) ?? (getChallengeValue('otpExpiresAt') as string),
+                projectedSpendUsdCents: (ext.projectedSpendUsdCents as number) ?? (getChallengeValue('projectedSpendUsdCents') as number),
                 message: result.errors[0].message,
               },
             };
@@ -772,15 +780,24 @@ export class SecurityHookService {
         if (err instanceof GraphQLClientError && err.errors?.length) {
           const ext = err.errors[0].extensions as Record<string, unknown> | undefined;
           if (ext?.code) {
+            const challengeDetails =
+              typeof ext.challenge === 'object' && ext.challenge !== null
+                ? (ext.challenge as Record<string, unknown>)
+                : undefined;
+            const getChallengeValue = (key: string) =>
+              (ext[key] as string | number | undefined) ??
+              (challengeDetails ? (challengeDetails[key] as string | number | undefined) : undefined);
+
             return {
               error: {
                 code: ext.code as string,
-                challengeId: ext.challengeId as string,
-                currentSpendUsdCents: ext.currentSpendUsdCents as number,
-                dailyLimitUsdCents: ext.dailyLimitUsdCents as number,
-                maskedEmail: ext.maskedEmail as string,
-                otpExpiresAt: ext.otpExpiresAt as string,
-                projectedSpendUsdCents: ext.projectedSpendUsdCents as number,
+                challengeId: getChallengeValue('challengeId') as string,
+                currentSpendUsdCents: (ext.currentSpendUsdCents as number) ?? (getChallengeValue('currentSpendUsdCents') as number),
+                dailyLimitUsdCents: (ext.dailyLimitUsdCents as number) ?? (getChallengeValue('dailyLimitUsdCents') as number),
+                maskedEmail: (ext.maskedEmail as string) ?? (getChallengeValue('maskedEmail') as string),
+                otpExpiresAt: (ext.otpExpiresAt as string) ?? (getChallengeValue('otpExpiresAt') as string),
+                projectedSpendUsdCents:
+                  (ext.projectedSpendUsdCents as number) ?? (getChallengeValue('projectedSpendUsdCents') as number),
                 message: err.errors[0].message,
               },
             };

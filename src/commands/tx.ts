@@ -384,10 +384,40 @@ export function registerTxCommand(program: Command, ctx: AppContext): void {
 
                   if (errCode === 'OTP_REQUIRED' || errCode === 'SPENDING_LIMIT_EXCEEDED') {
                     // Interactive OTP challenge info
+                    if (!hookResult.error.challengeId) {
+                      const otpRequestSpinner = ora('Requesting OTP challenge...').start();
+                      try {
+                        const otpChallenge = await hookService.requestSecurityOtp(
+                          accountInfo.address,
+                          accountInfo.chainId,
+                          ctx.sdk.entryPoint,
+                          userOp
+                        );
+                        hookResult.error.challengeId = otpChallenge.challengeId;
+                        hookResult.error.maskedEmail ??= otpChallenge.maskedEmail;
+                        hookResult.error.otpExpiresAt ??= otpChallenge.otpExpiresAt;
+                        otpRequestSpinner.stop();
+                      } catch (otpErr) {
+                        otpRequestSpinner.fail('Failed to request OTP challenge.');
+                        throw new TxError(
+                          ERR_SEND_FAILED,
+                          `Unable to request OTP challenge: ${(otpErr as Error).message}`
+                        );
+                      }
+                    }
+
+                    if (!hookResult.error.challengeId) {
+                      throw new TxError(
+                        ERR_SEND_FAILED,
+                        'OTP challenge ID was not provided by Elytro API. Please try again.'
+                      );
+                    }
+
                     console.error(JSON.stringify({
                       challenge: errCode,
                       message: hookResult.error.message ?? `Verification required (${errCode}).`,
                       ...(hookResult.error.maskedEmail ? { maskedEmail: hookResult.error.maskedEmail } : {}),
+                      ...(hookResult.error.otpExpiresAt ? { otpExpiresAt: hookResult.error.otpExpiresAt } : {}),
                       ...(errCode === 'SPENDING_LIMIT_EXCEEDED' && hookResult.error.projectedSpendUsdCents !== undefined
                         ? { projectedSpendUsd: (hookResult.error.projectedSpendUsdCents / 100).toFixed(2), dailyLimitUsd: ((hookResult.error.dailyLimitUsdCents ?? 0) / 100).toFixed(2) }
                         : {}),
