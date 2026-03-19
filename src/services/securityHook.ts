@@ -673,14 +673,16 @@ export class SecurityHookService {
 
   /**
    * Verify a security OTP challenge.
+   * @param authSessionIdOverride - If provided, use this session instead of getAuthSession (for deferred OTP resume)
    */
   async verifySecurityOtp(
     walletAddress: Address,
     chainId: number,
     challengeId: string,
-    otpCode: string
+    otpCode: string,
+    authSessionIdOverride?: string
   ): Promise<{ challengeId: string; status: string; verifiedAt: string }> {
-    const sessionId = await this.getAuthSession(walletAddress, chainId);
+    const sessionId = authSessionIdOverride ?? (await this.getAuthSession(walletAddress, chainId));
 
     const result = await this.gqlMutate<{
       verifySecurityOtp: {
@@ -706,21 +708,25 @@ export class SecurityHookService {
    *
    * Handles auth retry automatically.
    */
+  /**
+   * @param authSessionIdOverride - If provided, use this session (for deferred OTP resume with session-bound challenge)
+   */
   async getHookSignature(
     walletAddress: Address,
     chainId: number,
     entryPoint: Address,
-    userOp: ElytroUserOperation
+    userOp: ElytroUserOperation,
+    authSessionIdOverride?: string
   ): Promise<HookSignatureResult> {
     const op = this.formatUserOpForGraphQL(userOp);
 
     for (let attempt = 0; attempt <= 1; attempt++) {
       try {
-        if (attempt > 0) {
+        if (attempt > 0 && !authSessionIdOverride) {
           await this.clearAuthSession(walletAddress, chainId);
         }
 
-        const sessionId = await this.getAuthSession(walletAddress, chainId);
+        const sessionId = authSessionIdOverride ?? (await this.getAuthSession(walletAddress, chainId));
 
         const result = await this.gqlRaw<{
           authorizeUserOperation?: {

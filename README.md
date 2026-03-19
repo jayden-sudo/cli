@@ -36,6 +36,7 @@ elytro query balance
 - **Transaction simulation** — Preview gas, paymaster sponsorship, and balance impact before sending
 - **Cross-chain support** — Manage accounts across Ethereum, Optimism, Arbitrum, Base, and testnets
 - **SecurityHook (2FA)** — Install on-chain 2FA with email OTP and daily spending limits
+- **Deferred OTP** — Commands that require OTP exit immediately after sending the code; complete later with `elytro otp submit <id> <code>`
 - **Self-updating** — `elytro update` detects your package manager and upgrades in place
 
 ## Supported Chains
@@ -115,6 +116,11 @@ elytro security email bind <email>
 elytro security email change <email>
 elytro security spending-limit [amount]         # View or set daily USD limit
 
+# OTP (deferred verification)
+elytro otp submit <id> <code>   # Complete a pending OTP verification
+elytro otp cancel [id]          # Cancel pending OTP(s)
+elytro otp list                 # List pending OTPs for current account
+
 # Updates
 elytro update              # Check and upgrade to latest
 elytro update check        # Check without installing
@@ -124,6 +130,15 @@ elytro config set <key> <value>
 elytro config get <key>
 elytro config list
 ```
+
+## Deferred OTP Flow
+
+When a command requires OTP verification (e.g. `security email bind`, `tx send` with 2FA), the CLI sends the OTP to your email and exits immediately instead of blocking for input. To complete the action:
+
+1. Check your email for the 6-digit code.
+2. Run `elytro otp submit <id> <code>`, where `<id>` is printed in the command output (e.g. `elytro otp submit abc123 654321`).
+
+The `<id>` is returned in the JSON output as `otpPending.id` and in the stderr hint. Use `elytro otp list` to see all pending OTPs for the current account, or `elytro otp cancel [id]` to cancel.
 
 ## Development
 

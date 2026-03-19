@@ -5,9 +5,11 @@ import type { Address, Hex } from 'viem';
 import type { AppContext } from '../context';
 import type { ElytroUserOperation, AccountInfo, ChainConfig } from '../types';
 import { requestSponsorship, applySponsorToUserOp } from '../utils/sponsor';
-import { askConfirm, askInput } from '../utils/prompt';
+import { askConfirm } from '../utils/prompt';
 import { sanitizeErrorMessage, outputResult, outputError, maskApiKeys } from '../utils/display';
 import { SecurityHookService, createSignMessageForAuth } from '../services/securityHook';
+import { savePendingOtpAndOutput } from '../services/pendingOtp';
+import { serializeUserOpForPending } from '../utils/userOpSerialization';
 import { SECURITY_HOOK_ADDRESS_MAP } from '../constants/securityHook';
 
 // ─── Error Codes (JSON-RPC / MCP convention) ──────────────────────────
@@ -413,40 +415,26 @@ export function registerTxCommand(program: Command, ctx: AppContext): void {
                       );
                     }
 
-                    console.error(JSON.stringify({
-                      challenge: errCode,
-                      message: hookResult.error.message ?? `Verification required (${errCode}).`,
-                      ...(hookResult.error.maskedEmail ? { maskedEmail: hookResult.error.maskedEmail } : {}),
-                      ...(hookResult.error.otpExpiresAt ? { otpExpiresAt: hookResult.error.otpExpiresAt } : {}),
-                      ...(errCode === 'SPENDING_LIMIT_EXCEEDED' && hookResult.error.projectedSpendUsdCents !== undefined
-                        ? { projectedSpendUsd: (hookResult.error.projectedSpendUsdCents / 100).toFixed(2), dailyLimitUsd: ((hookResult.error.dailyLimitUsdCents ?? 0) / 100).toFixed(2) }
-                        : {}),
-                    }, null, 2));
-
-                    const otpCode = await askInput('Enter the 6-digit OTP code:');
-
-                    spinner.start('Verifying OTP...');
-                    await hookService.verifySecurityOtp(
-                      accountInfo.address,
-                      accountInfo.chainId,
-                      hookResult.error.challengeId!,
-                      otpCode.trim()
-                    );
-
-                    spinner.text = 'OTP verified. Retrying authorization...';
-                    hookResult = await hookService.getHookSignature(
-                      accountInfo.address,
-                      accountInfo.chainId,
-                      ctx.sdk.entryPoint,
-                      userOp
-                    );
-
-                    if (hookResult.error) {
-                      throw new TxError(
-                        ERR_SEND_FAILED,
-                        `Hook authorization failed after OTP: ${hookResult.error.message}`
-                      );
-                    }
+                    // Deferred OTP: save pending and exit (persist authSessionId for session-bound challenge)
+                    const challengeId = hookResult.error.challengeId!;
+                    const authSessionId = await hookService.getAuthSession(accountInfo.address, accountInfo.chainId);
+                    await savePendingOtpAndOutput(ctx.store, {
+                      id: challengeId,
+                      account: accountInfo.address,
+                      chainId: accountInfo.chainId,
+                      action: 'tx_send',
+                      challengeId,
+                      authSessionId,
+                      maskedEmail: hookResult.error.maskedEmail,
+                      otpExpiresAt: hookResult.error.otpExpiresAt,
+                      createdAt: new Date().toISOString(),
+                      data: {
+                        userOp: serializeUserOpForPending(userOp),
+                        entryPoint: ctx.sdk.entryPoint,
+                        txSpec: opts?.tx,
+                      },
+                    });
+                    return;
                   } else {
                     throw new TxError(
                       ERR_SEND_FAILED,

@@ -219,6 +219,40 @@ export interface HookError {
   message?: string;
 }
 
+// ─── Pending OTP (deferred input) ──────────────────────────────────
+
+export type PendingOtpAction =
+  | 'email_bind'
+  | 'email_change'
+  | 'spending_limit'
+  | 'tx_send'
+  | '2fa_uninstall';
+
+export type PendingOtpData =
+  | { email: string }
+  | { dailyLimitUsdCents: number }
+  | { userOp: Record<string, string | null>; entryPoint: string; txSpec?: string[] }
+  | { userOp: Record<string, string | null>; entryPoint: string };
+
+export interface PendingOtpState {
+  id: string;
+  account: string;
+  chainId: number;
+  action: PendingOtpAction;
+  challengeId?: string;
+  bindingId?: string;
+  /** Auth session that created the challenge; required for verifySecurityOtp when resuming */
+  authSessionId?: string;
+  maskedEmail?: string;
+  otpExpiresAt?: string;
+  createdAt: string;
+  data: PendingOtpData;
+}
+
+export interface PendingOtpsStore {
+  [id: string]: PendingOtpState;
+}
+
 // ─── Nullable helper ────────────────────────────────────────────────
 
 export type Nullable<T> = T | null | undefined;

@@ -5,8 +5,10 @@ import { registerAccountCommand } from "./commands/account";
 import { registerTxCommand } from "./commands/tx";
 import { registerQueryCommand } from "./commands/query";
 import { registerSecurityCommand } from "./commands/security";
+import { registerOtpCommand } from "./commands/otp";
 import { registerConfigCommand } from "./commands/config";
 import { registerUpdateCommand } from "./commands/update";
+import { runPrune } from "./commands/prune";
 import { outputError, sanitizeErrorMessage } from "./utils/display";
 import { VERSION } from "./version";
 
@@ -32,6 +34,13 @@ program
   );
 
 async function main(): Promise<void> {
+  // Prune runs before context — clears all local data for internal testing.
+  // Hidden from help; works even when wallet is corrupted.
+  if (process.argv.includes("prune")) {
+    await runPrune();
+    return;
+  }
+
   let ctx: Awaited<ReturnType<typeof createAppContext>> | null = null;
   try {
     ctx = await createAppContext();
@@ -41,6 +50,7 @@ async function main(): Promise<void> {
     registerTxCommand(program, ctx);
     registerQueryCommand(program, ctx);
     registerSecurityCommand(program, ctx);
+    registerOtpCommand(program, ctx);
     registerConfigCommand(program, ctx);
     registerUpdateCommand(program);
 

@@ -16,7 +16,10 @@ import {
   DEFAULT_SAFETY_DELAY,
 } from '../constants/securityHook';
 import { encodeInstallHook, encodeUninstallHook, encodeForcePreUninstall } from '../utils/contracts/securityHook';
-import { askConfirm, askInput } from '../utils/prompt';
+import { savePendingOtpAndOutput, generateOtpId } from '../services/pendingOtp';
+import { serializeUserOpForPending } from '../utils/userOpSerialization';
+import type { StorageAdapter } from '../types';
+import { askConfirm } from '../utils/prompt';
 import { address as shortAddr, sanitizeErrorMessage, outputResult, outputError } from '../utils/display';
 
 // ─── Error Codes ──────────────────────────────────────────────────────
@@ -42,13 +45,25 @@ class SecurityError extends Error {
   }
 }
 
+/** Thrown when OTP is deferred; output has already been printed. */
+class OtpDeferredError extends Error {
+  constructor() {
+    super('OTP deferred');
+    this.name = 'OtpDeferredError';
+  }
+}
+
 function handleSecurityError(err: unknown): void {
+  if (err instanceof OtpDeferredError) {
+    return; // Output already printed by savePendingOtpAndOutput
+  }
   if (err instanceof SecurityError) {
     outputError(err.code, err.message, err.data);
   } else {
     outputError(ERR_INTERNAL, (err as Error).message ?? String(err));
   }
 }
+
 
 // ─── Context Setup ────────────────────────────────────────────────────
 
@@ -216,10 +231,10 @@ async function signWithHookAndSend(
   spinner.text = 'Requesting hook authorization...';
   let hookResult = await hookService.getHookSignature(account.address, account.chainId, ctx.sdk.entryPoint, userOp);
 
-  // Handle OTP challenge
+  // Handle OTP challenge (deferred: saves pending and throws OtpDeferredError)
   if (hookResult.error) {
     spinner.stop();
-    hookResult = await handleOtpChallenge(hookService, account, ctx, userOp, hookResult);
+    hookResult = await handleOtpChallenge(hookService, account, ctx, userOp, hookResult, '2fa_uninstall');
   }
 
   // Pack final signature with hook data
@@ -250,14 +265,15 @@ async function signWithHookAndSend(
 
 /**
  * Handle OTP challenge from hook authorization.
- * Prompts user for OTP, verifies, and retries authorization.
+ * Saves pending state and throws OtpDeferredError for deferred completion via `otp submit`.
  */
 async function handleOtpChallenge(
   hookService: SecurityHookService,
   account: AccountInfo,
   ctx: AppContext,
   userOp: ElytroUserOperation,
-  hookResult: HookSignatureResult
+  hookResult: HookSignatureResult,
+  action: 'tx_send' | '2fa_uninstall'
 ): Promise<HookSignatureResult> {
   const err = hookResult.error!;
   const errCode = err.code ?? 'UNKNOWN';
@@ -266,44 +282,50 @@ async function handleOtpChallenge(
     throw new SecurityError(ERR_HOOK_AUTH_FAILED, `Hook authorization failed: ${err.message ?? errCode}`);
   }
 
-  // OTP challenge info is part of the interactive flow (not final output)
-  console.error(JSON.stringify({
-    challenge: errCode,
-    message: err.message ?? `Verification required (${errCode}).`,
-    ...(err.maskedEmail ? { maskedEmail: err.maskedEmail } : {}),
-    ...(errCode === 'SPENDING_LIMIT_EXCEEDED' && err.projectedSpendUsdCents !== undefined
-      ? { projectedSpendUsd: (err.projectedSpendUsdCents / 100).toFixed(2), dailyLimitUsd: ((err.dailyLimitUsdCents ?? 0) / 100).toFixed(2) }
-      : {}),
-  }, null, 2));
+  // Resolve challengeId: use from error, or fetch via requestSecurityOtp, or fallback to random id
+  let challengeId = err.challengeId;
+  let maskedEmail = err.maskedEmail;
+  let otpExpiresAt = err.otpExpiresAt;
 
-  const otpCode = await askInput('Enter the 6-digit OTP code:');
-
-  const verifySpinner = ora('Verifying OTP...').start();
-  try {
-    await hookService.verifySecurityOtp(account.address, account.chainId, err.challengeId!, otpCode.trim());
-    verifySpinner.text = 'OTP verified. Retrying authorization...';
-
-    const retryResult = await hookService.getHookSignature(
-      account.address,
-      account.chainId,
-      ctx.sdk.entryPoint,
-      userOp
-    );
-    verifySpinner.stop();
-
-    if (retryResult.error) {
-      throw new SecurityError(ERR_HOOK_AUTH_FAILED, `Authorization failed after OTP: ${retryResult.error.message}`);
+  if (!challengeId) {
+    try {
+      const otpChallenge = await hookService.requestSecurityOtp(
+        account.address,
+        account.chainId,
+        ctx.sdk.entryPoint,
+        userOp
+      );
+      challengeId = otpChallenge.challengeId;
+      maskedEmail ??= otpChallenge.maskedEmail;
+      otpExpiresAt ??= otpChallenge.otpExpiresAt;
+    } catch {
+      // Fallback: use locally generated id so command can exit with pending (otp submit may fail if backend requires its challengeId)
+      challengeId = generateOtpId();
     }
-
-    return retryResult;
-  } catch (e) {
-    verifySpinner.stop();
-    if (e instanceof SecurityError) throw e;
-    throw new SecurityError(
-      ERR_OTP_VERIFY_FAILED,
-      `OTP verification failed: ${sanitizeErrorMessage((e as Error).message)}`
-    );
   }
+
+  const id = challengeId;
+
+  // Persist authSessionId so otp submit uses same session (challenge is session-bound)
+  const authSessionId = await hookService.getAuthSession(account.address, account.chainId);
+
+  // Deferred OTP: save pending and exit
+  await savePendingOtpAndOutput(ctx.store, {
+    id,
+    account: account.address,
+    chainId: account.chainId,
+    action,
+    challengeId,
+    authSessionId,
+    maskedEmail,
+    otpExpiresAt,
+    createdAt: new Date().toISOString(),
+    data: {
+      userOp: serializeUserOpForPending(userOp),
+      entryPoint: ctx.sdk.entryPoint,
+    },
+  });
+  throw new OtpDeferredError();
 }
 
 // ─── Command Registration ─────────────────────────────────────────────
@@ -518,33 +540,19 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
         }
         spinner.stop();
 
-        // Interactive OTP flow
-        console.error(JSON.stringify({ otpSentTo: bindingResult.maskedEmail, expiresAt: bindingResult.otpExpiresAt }, null, 2));
-
-        const otpCode = await askInput('Enter the 6-digit OTP code:');
-
-        const confirmSpinner = ora('Confirming email binding...').start();
-        try {
-          const profile = await hookService.confirmEmailBinding(
-            account.address,
-            account.chainId,
-            bindingResult.bindingId,
-            otpCode.trim()
-          );
-          confirmSpinner.stop();
-
-          outputResult({
-            status: 'email_bound',
-            email: profile.maskedEmail ?? profile.email ?? emailAddr,
-            emailVerified: profile.emailVerified,
-          });
-        } catch (err) {
-          confirmSpinner.stop();
-          throw new SecurityError(
-            ERR_OTP_VERIFY_FAILED,
-            `OTP verification failed: ${sanitizeErrorMessage((err as Error).message)}`
-          );
-        }
+        // Deferred OTP: save pending and exit
+        const id = bindingResult.bindingId;
+        await savePendingOtpAndOutput(ctx.store, {
+          id,
+          account: account.address,
+          chainId: account.chainId,
+          action: 'email_bind',
+          bindingId: bindingResult.bindingId,
+          maskedEmail: bindingResult.maskedEmail,
+          otpExpiresAt: bindingResult.otpExpiresAt,
+          createdAt: new Date().toISOString(),
+          data: { email: emailAddr },
+        });
       } catch (err) {
         handleSecurityError(err);
       }
@@ -571,31 +579,19 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
         }
         spinner.stop();
 
-        console.error(JSON.stringify({ otpSentTo: bindingResult.maskedEmail }, null, 2));
-
-        const otpCode = await askInput('Enter the 6-digit OTP code:');
-
-        const confirmSpinner = ora('Confirming email change...').start();
-        try {
-          const profile = await hookService.confirmEmailBinding(
-            account.address,
-            account.chainId,
-            bindingResult.bindingId,
-            otpCode.trim()
-          );
-          confirmSpinner.stop();
-
-          outputResult({
-            status: 'email_changed',
-            email: profile.maskedEmail ?? profile.email ?? emailAddr,
-          });
-        } catch (err) {
-          confirmSpinner.stop();
-          throw new SecurityError(
-            ERR_OTP_VERIFY_FAILED,
-            `OTP verification failed: ${sanitizeErrorMessage((err as Error).message)}`
-          );
-        }
+        // Deferred OTP: save pending and exit
+        const id = bindingResult.bindingId;
+        await savePendingOtpAndOutput(ctx.store, {
+          id,
+          account: account.address,
+          chainId: account.chainId,
+          action: 'email_change',
+          bindingId: bindingResult.bindingId,
+          maskedEmail: bindingResult.maskedEmail,
+          otpExpiresAt: bindingResult.otpExpiresAt,
+          createdAt: new Date().toISOString(),
+          data: { email: emailAddr },
+        });
       } catch (err) {
         handleSecurityError(err);
       }
@@ -615,7 +611,7 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
         if (!amountStr) {
           await showSpendingLimit(hookService, account);
         } else {
-          await setSpendingLimit(hookService, account, amountStr);
+          await setSpendingLimit(ctx.store, hookService, account, amountStr);
         }
       } catch (err) {
         handleSecurityError(err);
@@ -760,6 +756,7 @@ async function showSpendingLimit(hookService: SecurityHookService, account: Acco
 }
 
 async function setSpendingLimit(
+  store: StorageAdapter,
   hookService: SecurityHookService,
   account: AccountInfo,
   amountStr: string
@@ -784,23 +781,16 @@ async function setSpendingLimit(
   }
   spinner.stop();
 
-  console.error(JSON.stringify({ otpSentTo: otpResult.maskedEmail }, null, 2));
-
-  const otpCode = await askInput('Enter the 6-digit OTP code:');
-
-  const setSpinner = ora('Setting daily limit...').start();
-  try {
-    await hookService.setDailyLimit(account.address, account.chainId, dailyLimitUsdCents, otpCode.trim());
-    setSpinner.stop();
-    outputResult({
-      status: 'daily_limit_set',
-      dailyLimitUsd: amountUsd.toFixed(2),
-    });
-  } catch (err) {
-    setSpinner.stop();
-    throw new SecurityError(
-      ERR_OTP_VERIFY_FAILED,
-      `Failed to set limit: ${sanitizeErrorMessage((err as Error).message)}`
-    );
-  }
+  // Deferred OTP: save pending and exit (id from generateOtpId since backend has no id)
+  const id = generateOtpId();
+  await savePendingOtpAndOutput(store, {
+    id,
+    account: account.address,
+    chainId: account.chainId,
+    action: 'spending_limit',
+    maskedEmail: otpResult.maskedEmail,
+    otpExpiresAt: otpResult.otpExpiresAt,
+    createdAt: new Date().toISOString(),
+    data: { dailyLimitUsdCents },
+  });
 }
