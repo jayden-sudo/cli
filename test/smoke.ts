@@ -4,7 +4,7 @@
  * Directly calls services to verify:
  *   init → create → list → info → switch → multi-account → persistence
  *   vault key: generation, encrypt/decrypt round-trip
- *   SecretProvider: KeychainProvider + EnvVarProvider availability
+ *   SecretProvider: KeyringProvider + EnvVarProvider availability
  *   export/import: password-based backup round-trip
  *
  * Usage:
@@ -20,7 +20,7 @@ import { webcrypto } from 'node:crypto';
 
 import { FileStore } from '../src/storage';
 import { KeyringService, ChainService, SDKService, WalletClientService, AccountService } from '../src/services';
-import { KeychainProvider, EnvVarProvider } from '../src/providers';
+import { KeyringProvider, EnvVarProvider } from '../src/providers';
 
 const TEST_DIR = join(tmpdir(), `.elytro-test-${Date.now()}`);
 
@@ -91,17 +91,15 @@ async function main() {
   // ─── 2. SecretProvider availability ────────────────────────────
   console.log('[providers]');
   try {
-    const keychainProvider = new KeychainProvider();
-    const available = await keychainProvider.available();
-    if (process.platform === 'darwin') {
-      assert.equal(available, true);
-      ok('KeychainProvider available on macOS');
+    const keyringProvider = new KeyringProvider();
+    const available = await keyringProvider.available();
+    if (available) {
+      ok(`KeyringProvider available (${keyringProvider.name})`);
     } else {
-      assert.equal(available, false);
-      ok('KeychainProvider unavailable on non-macOS (expected)');
+      ok('KeyringProvider unavailable (no OS credential store — expected in headless/CI)');
     }
   } catch (e) {
-    fail('KeychainProvider availability', e);
+    fail('KeyringProvider availability', e);
   }
 
   try {
@@ -116,20 +114,22 @@ async function main() {
   }
 
   try {
-    // EnvVarProvider should be available when env var is set
+    // EnvVarProvider should be available when env var AND opt-in flag are set
     const testKey = generateVaultKey();
     process.env.ELYTRO_VAULT_SECRET = Buffer.from(testKey).toString('base64');
+    process.env.ELYTRO_ALLOW_ENV = '1';
     const envProvider = new EnvVarProvider();
     const available = await envProvider.available();
     assert.equal(available, true);
-    ok('EnvVarProvider available when env var set');
+    ok('EnvVarProvider available when env var + ELYTRO_ALLOW_ENV=1 set');
 
-    // Load should consume-once (delete env var)
+    // Load should consume-once (delete env vars)
     const loaded = await envProvider.load();
     assert.ok(loaded);
     assert.deepEqual(loaded, testKey);
     assert.equal(process.env.ELYTRO_VAULT_SECRET, undefined);
-    ok('EnvVarProvider load() consumes env var');
+    assert.equal(process.env.ELYTRO_ALLOW_ENV, undefined);
+    ok('EnvVarProvider load() consumes env vars');
   } catch (e) {
     fail('EnvVarProvider load', e);
   }
