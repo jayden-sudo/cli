@@ -5,6 +5,7 @@ import {
   SDKService,
   WalletClientService,
   AccountService,
+  RecoveryService,
 } from './services';
 import { resolveProvider } from './providers';
 import type { SecretProvider } from './providers';
@@ -23,6 +24,7 @@ export interface AppContext {
   sdk: SDKService;
   walletClient: WalletClientService;
   account: AccountService;
+  recovery: RecoveryService;
   /**
    * The resolved provider for storing/loading the vault key.
    * null if no provider was available at boot (init not yet run, or unsupported platform).
@@ -107,6 +109,14 @@ export async function createAppContext(): Promise<AppContext> {
   });
   await account.init();
 
+  const recovery = new RecoveryService({
+    store,
+    sdk,
+    chain,
+    account,
+    keyring,
+  });
+
   // Re-initialize chain-dependent services to match the current account's chain.
   // The config default (e.g. OP Sepolia) may differ from the account's actual chain.
   const currentAccount = account.currentAccount;
@@ -128,6 +138,7 @@ export async function createAppContext(): Promise<AppContext> {
     sdk,
     walletClient,
     account,
+    recovery,
     secretProvider: loadProvider,
   };
 }

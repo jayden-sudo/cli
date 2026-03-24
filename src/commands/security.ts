@@ -24,6 +24,7 @@ import { savePendingOtpAndOutput, generateOtpId } from '../services/pendingOtp';
 import { serializeUserOpForPending } from '../utils/userOpSerialization';
 import type { StorageAdapter } from '../types';
 import { sanitizeErrorMessage, outputResult, outputError } from '../utils/display';
+import { checkRecoveryBlocked } from '../utils/recoveryGuard';
 
 // ─── Error Codes ──────────────────────────────────────────────────────
 
@@ -453,6 +454,7 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
     .action(async (opts) => {
       try {
         const { account, chainConfig, hookService } = initSecurityContext(ctx);
+        if (checkRecoveryBlocked(account)) return;
         await ctx.sdk.initForChain(chainConfig);
 
         // Check if already installed
@@ -519,6 +521,7 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
     .action(async (opts) => {
       try {
         const { account, chainConfig, hookService } = initSecurityContext(ctx);
+        if (checkRecoveryBlocked(account)) return;
         await ctx.sdk.initForChain(chainConfig);
 
         const spinner = ora('Checking hook status...').start();
@@ -561,6 +564,7 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
     .action(async (emailAddr: string) => {
       try {
         const { account, chainConfig, hookService } = initSecurityContext(ctx);
+        if (checkRecoveryBlocked(account)) return;
         await ctx.sdk.initForChain(chainConfig);
 
         const spinner = ora('Requesting email binding...').start();
@@ -607,6 +611,7 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
     .action(async (emailAddr: string) => {
       try {
         const { account, chainConfig, hookService } = initSecurityContext(ctx);
+        if (checkRecoveryBlocked(account)) return;
         await ctx.sdk.initForChain(chainConfig);
 
         const spinner = ora('Requesting email change...').start();
@@ -653,6 +658,8 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
     .action(async (amountStr?: string) => {
       try {
         const { account, chainConfig, hookService } = initSecurityContext(ctx);
+        // Guard only on set (write), not on view (read)
+        if (amountStr && checkRecoveryBlocked(account)) return;
         await ctx.sdk.initForChain(chainConfig);
 
         if (!amountStr) {

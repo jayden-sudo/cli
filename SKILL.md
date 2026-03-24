@@ -1,11 +1,11 @@
 ---
 name: elytro
 description: >
-  Elytro smart-account wallet CLI for agents: multi-chain ERC-4337, 2FA email OTP, spending limits.
-  Teaches agents to simulate before send, get user approval on risky steps, and explain outcomes in a
+  Elytro smart-account wallet CLI for agents: multi-chain ERC-4337, 2FA email OTP, spending limits,
+  social recovery. Simulate before send, get user approval on risky steps, and explain outcomes in a
   fixed, user-friendly format (no raw JSON unless asked). Deferred OTP completed with otp submit.
-  Use for: accounts, transfers, contract calls, email/security setup. Node >= 24.
-version: 0.6.1
+  Use for: accounts, transfers, contract calls, email/security setup, guardian recovery. Node >= 24.
+version: 0.7.0
 homepage: https://elytro.com
 metadata:
   openclaw:
@@ -24,19 +24,17 @@ metadata:
         label: 'Install Elytro CLI (npm)'
 ---
 
-# Elytro CLI — Agent Skill
+# Elytro CLI -- Agent Skill
 
-**Purpose:** Help users and agents use Elytro correctly: initialize a wallet, create accounts, preview and send transactions, and complete OTP-based security steps.
+**Install:** `npm install -g @elytro/cli` (Node >= 24)
 
-**Install:** `npm install -g @elytro/cli` (Node ≥ 24)
+**Command reference and consent list:** [references/commands.md](references/commands.md)
 
-**Command reference & consent list:** [references/commands.md](references/commands.md)
+All CLI commands return structured JSON. On error, read `error.message` and `error.data.hint` for what went wrong, and `suggestion` for what to do next. Follow those fields rather than guessing.
 
 ---
 
 ## Quick start
-
-Create a wallet and your first smart account:
 
 ```bash
 elytro init
@@ -52,194 +50,98 @@ elytro security spending-limit 100
 elytro security status
 ```
 
-## x402 payments (beta)
-
-- Delegations: ask the provider for their ERC-7710 DelegationManager + permission context, then store it with `elytro delegation add --manager <addr> --token <addr> --payee <addr> --amount <atomic> --permission 0x...`. Use `delegation list/show/remove` to manage entries per account. If the provider only offers EIP-3009 (USDC) on an EVM chain, Elytro will auto-sign the authorization—no delegation needed.
-- Dry run paywalls with `elytro request --dry-run <url>` — prints the resource info, transfer method (ERC-7710 vs EIP-3009), and required token amount directly from the `PAYMENT-REQUIRED` header.
-- To pay, run `elytro request <url> [--method POST --json '{"topic":"defi"}']` (after confirming with the user). The command replays the request automatically with `PAYMENT-SIGNATURE` once a matching delegation is found or it has synthesized an EIP-3009 authorization.
-- Results include the settlement header (transaction hash + network). Reference [docs/x402.md](docs/x402.md) for the full workflow and troubleshooting tips.
-
----
-
 ## Daily use
-
-Check the active chain and wallet balance:
 
 ```bash
 elytro query chain
 elytro query balance
 ```
 
-Preview a transaction before sending it:
+Always simulate before sending, with the same account and `--tx` arguments:
 
 ```bash
 elytro tx simulate agent-primary --tx "to:0xRecipient,value:0.1"
-```
-
-Send only after the user explicitly approves:
-
-```bash
+# show the preview to the user, wait for explicit approval
 elytro tx send agent-primary --tx "to:0xRecipient,value:0.1"
 ```
 
-For batch calls, repeat `--tx` in the same order for `simulate` and `send`.
-
----
+For batch calls, repeat `--tx` in the same order for both `simulate` and `send`.
 
 ## OTP flow
 
-Some commands pause for email verification and return an `otpPending` object.
+Some commands pause for email verification and return an `otpPending` object. Only the user should provide the code. The agent runs `elytro otp submit <id> <6-digit-code>` on their behalf -- do not ask the user to run CLI commands for OTP. Use `elytro otp list` to see pending verifications.
 
-Typical flow:
+## x402 payments (beta)
+
+Store provider delegations with `elytro delegation add --manager <addr> --token <addr> --payee <addr> --amount <atomic> --permission 0x...`. Use `delegation list/show/remove` to manage entries. If the provider only offers EIP-3009 (USDC), Elytro auto-signs -- no delegation needed.
+
+Preview paywalls: `elytro request --dry-run <url>`
+
+Pay (after user approval): `elytro request <url> [--method POST --json '{"topic":"defi"}']`
+
+Full workflow and troubleshooting: [docs/x402.md](docs/x402.md)
+
+## Social recovery
+
+Social recovery lets users designate guardians who can collectively restore wallet access. The CLI handles guardian management, backup, and recovery initiation. Guardian signing and on-chain execution happen in the external Recovery App at `https://recovery.elytro.com/`.
 
 ```bash
-elytro security email bind user@example.com
+# Set guardians (on-chain transaction, requires user approval)
+elytro recovery contacts set 0xAlice,0xBob,0xCarol --threshold 2
+# Options: --label "0xAlice=Alice,0xBob=Bob"  --privacy  --sponsor
+
+# Query / clear guardians
+elytro recovery contacts list
+elytro recovery contacts clear
+
+# Backup and restore guardian info offline
+elytro recovery backup export --output guardians.json
+elytro recovery backup import guardians.json
+
+# Initiate recovery (--chain is required)
+elytro recovery initiate 0xWalletToRecover --chain 11155420
+# Returns a recoveryUrl -- tell the user to share it with guardians
+
+# Check recovery progress
+elytro recovery status
 ```
 
-Rules:
-
-1. Only the user should provide the OTP code.
-2. The agent should run `elytro otp submit <id> <6-digit-code>` on the user's behalf after the user shares the code.
-3. Do not ask the user to run CLI commands for OTP unless they explicitly want to operate the CLI themselves.
-4. `elytro otp list` shows pending verifications for the current account.
+When `recovery initiate` succeeds, present the `recoveryUrl` prominently and tell the user to share it with their guardians so they can approve in the Recovery App.
 
 ---
 
-## Agent rules
+## Approval-required commands
 
-1. Use `elytro query` to confirm chain state, balances, and account status before giving advice.
-2. Require explicit user approval before running anything listed in [references/commands.md](references/commands.md) under _Agent: user approval before running_.
-3. Always run `tx simulate` before `tx send`, with the same account and the same ordered `--tx` arguments.
-4. Treat `--no-hook` as exceptional and call it out clearly before use.
-5. Never paste secrets or API keys into chat.
-6. Prefer account alias/address arguments instead of interactive selection.
+Get explicit user confirmation before running any command listed under "Agent: user approval before running" in [references/commands.md](references/commands.md). This includes all money movement, security changes, recovery writes, and OTP submission.
 
 ---
 
 ## How to explain results
 
-Agent must translate CLI output faithfully. Do not paraphrase away important fields, and do not invent details that were not returned.
+Do not show raw JSON unless the user asks. Translate CLI output faithfully: preserve exact identifiers (alias, address, chain, tx hash, userOp hash, OTP id), include all warnings, and copy any next-step commands exactly. Never claim a transaction is confirmed unless the CLI says so.
 
-Translation rules:
+Use these output shapes:
 
-1. Read `success`, then `result` or `error`.
-2. Preserve exact identifiers when present: account alias, address, chain name, chainId, tx hash, userOp hash, OTP id.
-3. Preserve exact status meaning. For example:
-   - `confirmed` means confirmed on-chain.
-   - `sent` means submitted/sent but not necessarily the same as a confirmed receipt unless the command says so.
-   - `otp_pending` means the action is not complete yet.
-4. If the CLI returns warnings, include all warnings.
-5. If the CLI returns a next step or submit command, copy it exactly.
-6. Do not show raw JSON unless the user asks for it.
+**Success:** `Done: <what changed>.` Optionally: `Next: <most useful next step>.`
 
-Use these fixed output shapes when replying to humans:
+**Query/status:** `Status: <plain-language summary>.` Then one short line with the most relevant facts.
 
-### Generic success
-
-Format:
-
-`Done: <what changed>.`
-
-Optional second line:
-
-`Next: <single most useful next command or action>.`
-
-Examples:
-
-- `Done: wallet initialized on this machine.`
-- `Done: active account is now agent-primary.`
-- `Done: Pimlico API key saved.`
-
-### Query or status result
-
-Format:
-
-`Status: <plain-language summary>.`
-
-Then one short line with the most relevant facts.
-
-Examples:
-
-- `Status: current chain is Optimism Sepolia (11155420).`
-- `Status: security hook is installed and email is verified.`
-- `Status: balance for agent-primary is 0.482 ETH.`
-
-### Transaction preview
-
-Use this exact structure:
-
+**Transaction preview:**
 `Preview: <transaction type>.`
-`Cost: <estimated cost or max cost from CLI>. Sponsored: <yes/no>.`
+`Cost: <estimated cost>. Sponsored: <yes/no>.`
 `Warnings: <every warning, or "none">.`
 `Please confirm if you want me to send it.`
 
-Rules:
+**Transaction sent:** `Done: transaction confirmed for <account>.` with `Tx: <hash>` and `Explorer: <url>` if present. If only submitted (not confirmed): use `UserOp: <hash>` instead.
 
-- Mention the account alias/address being used.
-- Mention every transaction in a batch in the same order if the result makes that available.
-- Never skip the confirmation line.
-
-### Transaction sent or confirmed
-
-If confirmed on-chain:
-
-`Done: transaction confirmed for <account or address>.`
-`Tx: <transactionHash>.`
-`Explorer: <url>` if present.
-
-If only submitted:
-
-`Done: transaction submitted for <account or address>.`
-`UserOp: <userOpHash or tx hash returned by CLI>.`
-
-Do not claim confirmation unless the CLI returned a confirmed/receipt-style result.
-
-### OTP pending
-
-Use this exact structure:
-
+**OTP pending:**
 `Action needed: email verification is required to continue.`
-`Code sent to: <maskedEmail or "your email">.`
-`Please send me the 6-digit code and I’ll complete it for you.`
+`Code sent to: <maskedEmail>.`
+`Please send me the 6-digit code and I'll complete it for you.`
 
-If `otpExpiresAt` is present, add:
+**Error:** `Couldn't complete: <reason from error.message>.` `Try: <hint from error.data.hint or suggestion>.`
 
-`Expires at: <timestamp>.`
-
-If the user asks what the agent will do next, the agent may mention that it will submit the pending OTP after receiving the code, but should not instruct the user to run the command by default.
-
-### Error
-
-Use this exact structure:
-
-`Couldn’t complete: <plain-language reason>.`
-`Try: <one concrete next step>.`
-
-Rules:
-
-- Base the reason on `error.message`.
-- If `error.data.hint` exists, prefer that for the `Try:` line.
-- If the failure is about approval, OTP, chain, balance, or deployment state, say that explicitly.
-- Do not dump internal stack traces or implementation details.
-
-### Lists
-
-For account lists, token lists, or pending OTP lists:
-
-- Start with a one-line summary: `Found <n> item(s).`
-- Then present each item in a short human-readable line.
-- For accounts, include alias, chain, and whether deployed.
-- For pending OTPs, include id, action, masked email if present, and the submit command.
-
-### Translation accuracy checklist
-
-Before replying, verify:
-
-1. Did I preserve the exact status meaning?
-2. Did I include all warnings, ids, hashes, and next-step commands returned by the CLI?
-3. Did I avoid claiming success when the result is only pending?
-4. Is the wording short, clear, and friendly for a human user?
-5. For OTP, did I ask the user for the code instead of telling them to run the command themselves?
+**Lists:** `Found <n> item(s).` Then one short line per item with the most relevant fields.
 
 ---
 
@@ -251,10 +153,8 @@ elytro account info agent-primary
 elytro account switch agent-primary
 elytro query tx <hash>
 elytro security status
+elytro recovery contacts list
+elytro recovery status
 elytro config show
 elytro update check
 ```
-
-Use [references/commands.md](references/commands.md) for command-specific messaging and approval requirements.
-
----

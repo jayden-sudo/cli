@@ -9,13 +9,11 @@ import {
   loadPendingOtps,
   clearPendingOtps,
 } from '../services/pendingOtp';
-import {
-  SecurityHookService,
-  createSignMessageForAuth,
-} from '../services/securityHook';
+import { SecurityHookService, createSignMessageForAuth } from '../services/securityHook';
 import { SECURITY_HOOK_ADDRESS_MAP } from '../constants/securityHook';
 import { outputResult, outputError } from '../utils/display';
 import type { ElytroUserOperation } from '../types';
+import { checkRecoveryBlocked } from '../utils/recoveryGuard';
 
 const ERR_OTP_NOT_FOUND = -32013;
 const ERR_OTP_EXPIRED = -32014;
@@ -39,13 +37,15 @@ export function registerOtpCommand(program: Command, ctx: AppContext): void {
     .action(async (id: string, code: string) => {
       const pending = await getPendingOtp(ctx.store, id);
       if (!pending) {
-        outputError(
-          ERR_OTP_NOT_FOUND,
-          'Unknown OTP id. It may have expired or been completed.',
-          { id }
-        );
+        outputError(ERR_OTP_NOT_FOUND, 'Unknown OTP id. It may have expired or been completed.', {
+          id,
+        });
         return;
       }
+
+      // Recovery guard: check the account that owns this pending OTP
+      const pendingAccount = ctx.account.resolveAccount(pending.account);
+      if (pendingAccount && checkRecoveryBlocked(pendingAccount)) return;
 
       if (isOtpExpired(pending.otpExpiresAt)) {
         await removePendingOtp(ctx.store, id);
@@ -59,9 +59,13 @@ export function registerOtpCommand(program: Command, ctx: AppContext): void {
       // Ensure current account matches pending
       const current = ctx.account.currentAccount;
       if (!current || current.address.toLowerCase() !== pending.account.toLowerCase()) {
-        outputError(ERR_ACCOUNT_NOT_READY, `Switch to the account that initiated this OTP first: elytro account switch <alias>`, {
-          pendingAccount: pending.account,
-        });
+        outputError(
+          ERR_ACCOUNT_NOT_READY,
+          `Switch to the account that initiated this OTP first: elytro account switch <alias>`,
+          {
+            pendingAccount: pending.account,
+          },
+        );
         return;
       }
 
@@ -89,7 +93,9 @@ export function registerOtpCommand(program: Command, ctx: AppContext): void {
           packSignature: (rawSig, valData) => ctx.sdk.packUserOpSignature(rawSig, valData),
         }),
         readContract: async (params) =>
-          ctx.walletClient.readContract(params as Parameters<typeof ctx.walletClient.readContract>[0]),
+          ctx.walletClient.readContract(
+            params as Parameters<typeof ctx.walletClient.readContract>[0],
+          ),
         getBlockTimestamp: async () => {
           const blockNum = await ctx.walletClient.raw.getBlockNumber();
           const block = await ctx.walletClient.raw.getBlock({ blockNumber: blockNum });
@@ -143,7 +149,7 @@ export function registerOtpCommand(program: Command, ctx: AppContext): void {
       const current = ctx.account.currentAccount;
       const pendings = current
         ? Object.values(all).filter(
-            (p) => p.account.toLowerCase() === current.address.toLowerCase()
+            (p) => p.account.toLowerCase() === current.address.toLowerCase(),
           )
         : Object.values(all);
 
@@ -171,7 +177,7 @@ async function completePendingOtp(
   account: { address: Address; chainId: number; alias: string },
   pending: PendingOtpState,
   code: string,
-  spinner: ReturnType<typeof ora>
+  spinner: ReturnType<typeof ora>,
 ): Promise<void> {
   switch (pending.action) {
     case 'email_bind':
@@ -183,7 +189,7 @@ async function completePendingOtp(
         account.address as Address,
         account.chainId,
         pending.bindingId,
-        code
+        code,
       );
       outputResult({
         status: pending.action === 'email_bind' ? 'email_bound' : 'email_changed',
@@ -194,12 +200,13 @@ async function completePendingOtp(
     }
     case 'spending_limit': {
       spinner.stop();
-      const dailyLimitUsdCents = (pending.data as { dailyLimitUsdCents: number }).dailyLimitUsdCents;
+      const dailyLimitUsdCents = (pending.data as { dailyLimitUsdCents: number })
+        .dailyLimitUsdCents;
       await hookService.setDailyLimit(
         account.address as Address,
         account.chainId,
         dailyLimitUsdCents,
-        code
+        code,
       );
       outputResult({
         status: 'daily_limit_set',
@@ -222,7 +229,7 @@ async function completePendingOtp(
         account.chainId,
         pending.challengeId,
         code,
-        authSessionId
+        authSessionId,
       );
       spinner.text = 'Retrying authorization...';
       const hookResult = await hookService.getHookSignature(
@@ -230,7 +237,7 @@ async function completePendingOtp(
         account.chainId,
         entryPoint as Address,
         userOp,
-        authSessionId
+        authSessionId,
       );
       if (hookResult.error) {
         throw new Error(`Authorization failed after OTP: ${hookResult.error.message}`);
@@ -243,7 +250,7 @@ async function completePendingOtp(
         rawSignature,
         validationData,
         hookAddress,
-        hookResult.signature! as Hex
+        hookResult.signature! as Hex,
       );
       spinner.text = 'Sending UserOp...';
       const opHash = await ctx.sdk.sendUserOp(userOp);
@@ -288,4 +295,3 @@ function deserializeUserOp(raw: Record<string, string | null>): ElytroUserOperat
     signature: (raw.signature as Hex) ?? '0x',
   };
 }
-

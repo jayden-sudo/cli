@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { outputError, outputResult } from '../utils/display';
 import type { AppContext } from '../context';
 import { X402Service } from '../services/x402';
+import { checkRecoveryBlocked } from '../utils/recoveryGuard';
 
 interface RequestOptions {
   method?: string;
@@ -59,18 +60,30 @@ export function registerRequestCommand(program: Command, ctx: AppContext): void 
     .description('Send an HTTP request with automatic x402 payment handling')
     .argument('<url>', 'Target URL')
     .option('--method <method>', 'HTTP method (default: GET)')
-    .option('--header <key:value>', 'Custom headers', (value, prev: string[]) => {
-      prev.push(value);
-      return prev;
-    }, [])
+    .option(
+      '--header <key:value>',
+      'Custom headers',
+      (value, prev: string[]) => {
+        prev.push(value);
+        return prev;
+      },
+      [],
+    )
     .option('--body <string>', 'Raw request body (string)')
-    .option('--json <json>', 'JSON body (stringified). Sets Content-Type: application/json if missing.')
+    .option(
+      '--json <json>',
+      'JSON body (stringified). Sets Content-Type: application/json if missing.',
+    )
     .option('--account <aliasOrAddress>', 'Account alias/address to pay from (default: current)')
     .option('--dry-run', 'Preview payment requirements without paying')
     .option('--verbose', 'Log request/response debug details')
     .action(async (url: string, options: RequestOptions & { header: string[] }) => {
       const method = (options.method ?? 'GET').toUpperCase();
       try {
+        // Recovery guard for payment requests
+        const currentAcct = ctx.account.currentAccount;
+        if (currentAcct && checkRecoveryBlocked(currentAcct)) return;
+
         const headers = parseHeaders(options.header);
         const body = buildBody(options, headers);
 

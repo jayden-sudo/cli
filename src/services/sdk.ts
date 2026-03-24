@@ -1,5 +1,27 @@
-import type { Address, Hex } from 'viem';
-import { padHex, createPublicClient, http, toHex, parseEther } from 'viem';
+import type { Address, Hex, PublicClient } from 'viem';
+import {
+  padHex,
+  createPublicClient,
+  http,
+  toHex,
+  parseEther,
+  keccak256,
+  encodeAbiParameters,
+  parseAbiParameters,
+  parseAbiItem,
+  decodeAbiParameters,
+  hashTypedData,
+  zeroHash,
+  parseAbi,
+} from 'viem';
+import { ABI_SocialRecoveryModule, ABI_Elytro } from '@elytro/abi';
+import { SocialRecovery } from '@elytro/sdk';
+import {
+  GUARDIAN_INFO_KEY,
+  INFO_RECORDER_ADDRESS,
+  RecoveryOperationState,
+} from '../constants/recovery';
+import type { RecoveryContactsInfo } from '../types';
 import type { ChainConfig, ElytroUserOperation } from '../types';
 import { ElytroWallet, Bundler, type UserOperation } from '@elytro/sdk';
 
@@ -11,7 +33,8 @@ import { ElytroWallet, Bundler, type UserOperation } from '@elytro/sdk';
  */
 
 /** Default guardian hash when no guardians are set. */
-const DEFAULT_GUARDIAN_HASH = '0x0000000000000000000000000000000000000000000000000000000000000001' as Hex;
+const DEFAULT_GUARDIAN_HASH =
+  '0x0000000000000000000000000000000000000000000000000000000000000001' as Hex;
 
 /** Default guardian safe period: 48 hours. */
 const DEFAULT_GUARDIAN_SAFE_PERIOD = 172800;
@@ -28,14 +51,16 @@ const ENTRYPOINT_CONFIGS: Record<string, SDKContractConfig> = {
     recovery: '0x36693563E41BcBdC8d295bD3C2608eb7c32b1cCb',
     validator: '0x162485941bA1FAF21013656DAB1E60e9D7226DC0',
     elytroWalletLogic: '0x186b91aE45dd22dEF329BF6b4233cf910E157C84',
+    infoRecorder: INFO_RECORDER_ADDRESS,
   },
   'v0.8': {
     entryPoint: '0x4337084d9e255ff0702461cf8895ce9e3b5ff108',
     factory: '0x82a8B1a5986f565a1546672e8939daA1b20F441E',
     fallback: '0xB73Ec2FD0189202F6C22067Eeb19EAad25CAB551',
-    recovery: '0xAFEF5D8Fb7b4650B1724a23e40633f720813c731',
+    recovery: '0xAFEF5D8Fb7B4650B1724a23e40633f720813c731',
     validator: '0xea50a2874df3eEC9E0365425ba948989cd63FED6',
     elytroWalletLogic: '0x2CC8A41e26dAC15F1D11F333f74D0451be6caE36',
+    infoRecorder: INFO_RECORDER_ADDRESS,
   },
 };
 
@@ -55,6 +80,7 @@ interface SDKContractConfig {
   recovery: string;
   validator: string;
   elytroWalletLogic: string;
+  infoRecorder: string;
 }
 
 export class SDKService {
@@ -63,9 +89,13 @@ export class SDKService {
   private chainConfig: ChainConfig | null = null;
   private contractConfig: SDKContractConfig = ENTRYPOINT_CONFIGS[DEFAULT_VERSION];
 
-  async initForChain(chainConfig: ChainConfig, entrypointVersion: string = DEFAULT_VERSION): Promise<void> {
+  async initForChain(
+    chainConfig: ChainConfig,
+    entrypointVersion: string = DEFAULT_VERSION,
+  ): Promise<void> {
     this.chainConfig = chainConfig;
-    this.contractConfig = ENTRYPOINT_CONFIGS[entrypointVersion] ?? ENTRYPOINT_CONFIGS[DEFAULT_VERSION];
+    this.contractConfig =
+      ENTRYPOINT_CONFIGS[entrypointVersion] ?? ENTRYPOINT_CONFIGS[DEFAULT_VERSION];
 
     // Import SDK and instantiate ElytroWallet
     const { ElytroWallet, Bundler } = await import('@elytro/sdk');
@@ -80,7 +110,7 @@ export class SDKService {
         chainId: chainConfig.id,
         entryPoint: this.contractConfig.entryPoint,
         elytroWalletLogic: this.contractConfig.elytroWalletLogic,
-      }
+      },
     );
 
     this.bundlerInstance = new Bundler(chainConfig.bundler);
@@ -99,7 +129,7 @@ export class SDKService {
     chainId: number,
     index: number = 0,
     initialGuardianHash: Hex = DEFAULT_GUARDIAN_HASH,
-    initialGuardianSafePeriod: number = DEFAULT_GUARDIAN_SAFE_PERIOD
+    initialGuardianSafePeriod: number = DEFAULT_GUARDIAN_SAFE_PERIOD,
   ): Promise<Address> {
     const sdk = this.ensureSDK();
 
@@ -111,7 +141,7 @@ export class SDKService {
       [paddedKey],
       initialGuardianHash,
       initialGuardianSafePeriod,
-      chainId
+      chainId,
     );
 
     if (result.isErr()) {
@@ -138,7 +168,7 @@ export class SDKService {
    */
   async createSendUserOp(
     senderAddress: Address,
-    txs: Array<{ to: string; value?: string; data?: string }>
+    txs: Array<{ to: string; value?: string; data?: string }>,
   ): Promise<ElytroUserOperation> {
     const sdk = this.ensureSDK();
 
@@ -162,7 +192,7 @@ export class SDKService {
     eoaAddress: Address,
     index: number = 0,
     initialGuardianHash: Hex = DEFAULT_GUARDIAN_HASH,
-    initialGuardianSafePeriod: number = DEFAULT_GUARDIAN_SAFE_PERIOD
+    initialGuardianSafePeriod: number = DEFAULT_GUARDIAN_SAFE_PERIOD,
   ): Promise<ElytroUserOperation> {
     const sdk = this.ensureSDK();
     const paddedKey = padHex(eoaAddress, { size: 32 });
@@ -172,7 +202,7 @@ export class SDKService {
       [paddedKey],
       initialGuardianHash,
       undefined, // callData
-      initialGuardianSafePeriod
+      initialGuardianSafePeriod,
     );
 
     if (result.isErr()) {
@@ -188,7 +218,9 @@ export class SDKService {
    * Uses the non-standard `pimlico_getUserOperationGasPrice` RPC method.
    * Returns { maxFeePerGas, maxPriorityFeePerGas } from the "fast" tier.
    */
-  async getFeeData(chainConfig: ChainConfig): Promise<{ maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }> {
+  async getFeeData(
+    chainConfig: ChainConfig,
+  ): Promise<{ maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }> {
     const client = createPublicClient({
       transport: http(chainConfig.bundler),
     });
@@ -232,7 +264,7 @@ export class SDKService {
    */
   async estimateUserOp(
     userOp: ElytroUserOperation,
-    opts: { fakeBalance?: boolean } = {}
+    opts: { fakeBalance?: boolean } = {},
   ): Promise<{
     callGasLimit: bigint;
     verificationGasLimit: bigint;
@@ -246,18 +278,20 @@ export class SDKService {
     const opForEstimate = { ...userOp, signature: DUMMY_SIGNATURE };
 
     // State override: fake sender balance to prevent AA21 for undeployed/unfunded accounts
-    const stateOverride = opts.fakeBalance ? { [userOp.sender]: { balance: toHex(parseEther('1')) } } : undefined;
+    const stateOverride = opts.fakeBalance
+      ? { [userOp.sender]: { balance: toHex(parseEther('1')) } }
+      : undefined;
 
     const result = await sdk.estimateUserOperationGas(
       this.contractConfig.validator,
       this.toSDKUserOp(opForEstimate),
-      stateOverride
+      stateOverride,
     );
 
     if (result.isErr()) {
       const err = result.ERR;
       throw new Error(
-        `Gas estimation failed: ${typeof err === 'object' && err !== null && 'message' in err ? (err as { message: string }).message : String(err)}`
+        `Gas estimation failed: ${typeof err === 'object' && err !== null && 'message' in err ? (err as { message: string }).message : String(err)}`,
       );
     }
 
@@ -269,7 +303,9 @@ export class SDKService {
       paymasterVerificationGasLimit: gas.paymasterVerificationGasLimit
         ? BigInt(gas.paymasterVerificationGasLimit)
         : null,
-      paymasterPostOpGasLimit: gas.paymasterPostOpGasLimit ? BigInt(gas.paymasterPostOpGasLimit) : null,
+      paymasterPostOpGasLimit: gas.paymasterPostOpGasLimit
+        ? BigInt(gas.paymasterPostOpGasLimit)
+        : null,
     };
   }
 
@@ -278,7 +314,9 @@ export class SDKService {
    *
    * Two-step: userOpHash → packRawHash to get the final digest for signing.
    */
-  async getUserOpHash(userOp: ElytroUserOperation): Promise<{ packedHash: Hex; validationData: Hex }> {
+  async getUserOpHash(
+    userOp: ElytroUserOperation,
+  ): Promise<{ packedHash: Hex; validationData: Hex }> {
     const sdk = this.ensureSDK();
 
     // Step 1: compute raw userOp hash
@@ -307,7 +345,11 @@ export class SDKService {
   async packUserOpSignature(rawSignature: Hex, validationData: Hex): Promise<Hex> {
     const sdk = this.ensureSDK();
 
-    const result = await sdk.packUserOpEOASignature(this.contractConfig.validator, rawSignature, validationData);
+    const result = await sdk.packUserOpEOASignature(
+      this.contractConfig.validator,
+      rawSignature,
+      validationData,
+    );
 
     if (result.isErr()) {
       throw new Error(`Failed to pack signature: ${result.ERR}`);
@@ -333,7 +375,7 @@ export class SDKService {
     rawSignature: Hex,
     validationData: Hex,
     hookAddress: Address,
-    hookSignature: Hex
+    hookSignature: Hex,
   ): Promise<Hex> {
     const sdk = this.ensureSDK();
 
@@ -348,7 +390,7 @@ export class SDKService {
       this.contractConfig.validator,
       rawSignature,
       validationData,
-      hookInputData
+      hookInputData,
     );
 
     if (result.isErr()) {
@@ -388,7 +430,7 @@ export class SDKService {
     if (sendResult.isErr()) {
       const err = sendResult.ERR;
       throw new Error(
-        `Failed to send UserOp: ${typeof err === 'object' && err !== null && 'message' in err ? (err as { message: string }).message : String(err)}`
+        `Failed to send UserOp: ${typeof err === 'object' && err !== null && 'message' in err ? (err as { message: string }).message : String(err)}`,
       );
     }
 
@@ -443,7 +485,9 @@ export class SDKService {
       delay = Math.min(Math.floor(delay * 1.5), maxDelay);
     }
 
-    throw new Error(`UserOperation receipt not found after ${maxAttempts} attempts (~90s). Hash: ${opHash}`);
+    throw new Error(
+      `UserOperation receipt not found after ${maxAttempts} attempts (~90s). Hash: ${opHash}`,
+    );
   }
 
   // ─── Accessors ─────────────────────────────────────────────────
@@ -477,7 +521,408 @@ export class SDKService {
     return this.ensureSDK();
   }
 
+  // ─── Recovery ──────────────────────────────────────────────────
+
+  /**
+   * Read social recovery info from the SocialRecoveryModule contract.
+   * Returns contactsHash, nonce, and delayPeriod.
+   *
+   * Extension reference: sdk.ts#getRecoveryInfo
+   */
+  async getRecoveryInfo(address: Address): Promise<{
+    contactsHash: string;
+    nonce: bigint;
+    delayPeriod: bigint;
+  } | null> {
+    const client = this._getClient();
+
+    try {
+      const result = (await client.readContract({
+        address: this.contractConfig.recovery as Address,
+        abi: ABI_SocialRecoveryModule,
+        functionName: 'getSocialRecoveryInfo',
+        args: [address],
+      })) as unknown[];
+
+      if (!result || result.length !== 3) {
+        throw new Error('Unexpected response from getSocialRecoveryInfo');
+      }
+
+      return {
+        contactsHash: result[0] as string,
+        nonce: result[1] as bigint,
+        delayPeriod: result[2] as bigint,
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Query guardian contacts from InfoRecorder event logs.
+   *
+   * Looks up the latest DataRecorded event for the given wallet address
+   * with the GUARDIAN_INFO_KEY category, then decodes the guardian data.
+   *
+   * Extension reference: sdk.ts#queryRecoveryContacts
+   */
+  async queryRecoveryContacts(address: Address): Promise<RecoveryContactsInfo | null> {
+    const client = this._getClient();
+    const infoRecorder = this.contractConfig.infoRecorder as Address;
+
+    // Get the block number of the latest record
+    const startBlock = await client.readContract({
+      address: infoRecorder,
+      abi: parseAbi([
+        'function latestRecordAt(address addr, bytes32 category) external view returns (uint256 blockNumber)',
+      ]),
+      functionName: 'latestRecordAt',
+      args: [address, GUARDIAN_INFO_KEY],
+    });
+
+    if (startBlock === 0n) {
+      return null;
+    }
+
+    const fromBlock = startBlock - 10n > 0n ? startBlock - 10n : 0n;
+    const currentBlock = await client.getBlockNumber();
+    const toBlock = startBlock + 10n > currentBlock ? currentBlock : startBlock + 10n;
+
+    const logs = await client.getLogs({
+      address: infoRecorder,
+      fromBlock,
+      toBlock,
+      event: parseAbiItem(
+        'event DataRecorded(address indexed wallet, bytes32 indexed category, bytes data)',
+      ),
+      args: {
+        wallet: address,
+        category: GUARDIAN_INFO_KEY,
+      },
+    });
+
+    if (!logs.length) {
+      return null;
+    }
+
+    const lastLog = logs[logs.length - 1];
+    if (!lastLog || !lastLog.args) {
+      return null;
+    }
+
+    const parsed = decodeAbiParameters(
+      parseAbiParameters(['address[]', 'uint256', 'bytes32']),
+      (lastLog.args as { data: Hex }).data,
+    );
+
+    return {
+      contacts: parsed[0] as string[],
+      threshold: Number(parsed[1]),
+      salt: parsed[2] as string,
+    };
+  }
+
+  /**
+   * Get current recovery nonce for a wallet.
+   * Extension reference: sdk.ts#getRecoveryNonce
+   */
+  async getRecoveryNonce(address: Address): Promise<number> {
+    const client = this._getClient();
+    const nonce = await client.readContract({
+      address: this.contractConfig.recovery as Address,
+      abi: ABI_SocialRecoveryModule,
+      functionName: 'walletNonce',
+      args: [address],
+    });
+    return Number(nonce);
+  }
+
+  /**
+   * Compute the on-chain recovery operation ID (keccak256).
+   * Extension reference: sdk.ts#getRecoveryOnchainID
+   */
+  getRecoveryOnchainID(address: Address, nonce: number, newOwners: string[]): string {
+    const ownersData = encodeAbiParameters(parseAbiParameters(['bytes32[]']), [
+      newOwners.map((owner) => padHex(owner as Hex, { size: 32 })),
+    ]);
+
+    const onChainID = keccak256(
+      encodeAbiParameters(
+        parseAbiParameters(['address', 'uint256', 'bytes', 'address', 'uint256']),
+        [
+          address,
+          BigInt(nonce),
+          ownersData,
+          this.contractConfig.recovery as Address,
+          BigInt(this.ensureChainConfig().id),
+        ],
+      ),
+    );
+
+    return onChainID;
+  }
+
+  /**
+   * Compute the EIP-712 typed data hash for recovery approval.
+   * Extension reference: sdk.ts#generateRecoveryApproveHash
+   */
+  generateRecoveryApproveHash(address: Address, nonce: number, newOwners: string[]): string {
+    const chainConfig = this.ensureChainConfig();
+
+    const typedData = SocialRecovery.getSocialRecoveryTypedData(
+      chainConfig.id,
+      this.contractConfig.recovery as string,
+      address,
+      nonce,
+      newOwners,
+    );
+
+    const domain = {
+      chainId: Number(typedData.domain.chainId),
+      ...(typedData.domain.name && { name: typedData.domain.name }),
+      verifyingContract: typedData.domain.verifyingContract as Address,
+      ...(typedData.domain.version && { version: typedData.domain.version }),
+    };
+
+    const sigHash = hashTypedData({
+      domain,
+      types: typedData.types,
+      primaryType: typedData.primaryType,
+      message: typedData.message,
+    });
+
+    return sigHash.toLowerCase();
+  }
+
+  /**
+   * Check if a guardian has signed the recovery approval (ApproveHash event).
+   * Extension reference: sdk.ts#checkIsGuardianSigned
+   */
+  async checkIsGuardianSigned(guardian: Address, fromBlock: bigint, hash?: Hex): Promise<boolean> {
+    const logs = (await this._getLogsPaginated({
+      address: this.contractConfig.recovery as Address,
+      fromBlock,
+      event: parseAbiItem('event ApproveHash(address indexed guardian, bytes32 hash)'),
+      args: { guardian },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    })) as any[];
+
+    if (hash) {
+      return logs.some((log) => {
+        const logArgs = log.args as { hash?: string } | undefined;
+        return logArgs && logArgs.hash === hash;
+      });
+    }
+
+    return logs.length > 0;
+  }
+
+  /**
+   * Check if a specific guardian has approved a recovery hash on-chain.
+   *
+   * The contract's `approvedHashes` mapping is keyed by a composite key:
+   *   keccak256(abi.encode(guardian, hash))
+   * So we compute the key per-guardian and check the value (1 = approved).
+   * Single `readContract` call per guardian -- no log scanning needed.
+   */
+  async isGuardianApprovedOnchain(guardian: Address, hash: Hex): Promise<boolean> {
+    const client = this._getClient();
+
+    const compositeKey = keccak256(
+      encodeAbiParameters(parseAbiParameters(['address', 'bytes32']), [guardian, hash]),
+    );
+
+    const value = await client.readContract({
+      address: this.contractConfig.recovery as Address,
+      abi: ABI_SocialRecoveryModule,
+      functionName: 'approvedHashes',
+      args: [compositeKey],
+    });
+
+    return Number(value) > 0;
+  }
+
+  /**
+   * Check approval status for all guardians in parallel.
+   * Returns per-guardian boolean array + total signed count.
+   */
+  async checkGuardianApprovals(
+    guardians: Address[],
+    hash: Hex,
+  ): Promise<{ results: boolean[]; signedCount: number }> {
+    const results = await Promise.all(
+      guardians.map((g) => this.isGuardianApprovedOnchain(g, hash)),
+    );
+    return {
+      results,
+      signedCount: results.filter(Boolean).length,
+    };
+  }
+
+  /**
+   * Read on-chain recovery operation state.
+   * Returns RecoveryOperationState enum value (Unset/Waiting/Ready/Done).
+   * Extension reference: sdk.ts#checkOnchainRecoveryStatus
+   */
+  async checkOnchainRecoveryStatus(wallet: Address, id: string): Promise<RecoveryOperationState> {
+    const client = this._getClient();
+
+    const status = await client.readContract({
+      address: this.contractConfig.recovery as Address,
+      abi: ABI_SocialRecoveryModule,
+      functionName: 'getOperationState',
+      args: [wallet, id],
+    });
+
+    return Number(status) as RecoveryOperationState;
+  }
+
+  /**
+   * Read the valid time for a recovery operation.
+   * Returns the Unix timestamp when the recovery becomes executable.
+   */
+  async getOperationValidTime(wallet: Address, id: string): Promise<number> {
+    const client = this._getClient();
+
+    const validTime = await client.readContract({
+      address: this.contractConfig.recovery as Address,
+      abi: ABI_SocialRecoveryModule,
+      functionName: 'getOperationValidTime',
+      args: [wallet, id],
+    });
+
+    return Number(validTime);
+  }
+
+  /**
+   * Check if an address is an owner of the given wallet.
+   * Used for self-recovery guard.
+   * Calls isOwner(bytes32) on the Elytro smart wallet contract.
+   */
+  async isOwnerOfWallet(walletAddress: Address, ownerAddress: Address): Promise<boolean> {
+    const client = this._getClient();
+    const paddedOwner = padHex(ownerAddress, { size: 32 });
+
+    try {
+      const result = await client.readContract({
+        address: walletAddress,
+        abi: ABI_Elytro,
+        functionName: 'isOwner',
+        args: [paddedOwner],
+      });
+      return Boolean(result);
+    } catch {
+      // Contract may not be deployed
+      return false;
+    }
+  }
+
+  /**
+   * Wrapper around SocialRecovery.calcGuardianHash.
+   */
+  calculateRecoveryContactsHash(contacts: string[], threshold: number): string {
+    return SocialRecovery.calcGuardianHash(contacts, threshold, zeroHash);
+  }
+
+  /**
+   * Get the current block number from the RPC.
+   */
+  async getBlockNumber(): Promise<bigint> {
+    const client = this._getClient();
+    return client.getBlockNumber();
+  }
+
+  /** Expose infoRecorder address from current config. */
+  get infoRecorderAddress(): Address {
+    return this.contractConfig.infoRecorder as Address;
+  }
+
+  /** Expose recovery module address from current config. */
+  get recoveryModuleAddress(): Address {
+    return this.contractConfig.recovery as Address;
+  }
+
   // ─── Internal ──────────────────────────────────────────────────
+
+  /**
+   * Create a viem PublicClient for read-only RPC calls.
+   * Extension reference: sdk.ts#_getClient
+   */
+  private _getClient(): PublicClient {
+    const chainConfig = this.ensureChainConfig();
+    return createPublicClient({
+      transport: http(chainConfig.endpoint),
+    });
+  }
+
+  /**
+   * Paginated getLogs that respects public RPC block-range limits.
+   * Mirrors extension's getLogsOnchain: walks forward in steps, halves on
+   * "block range" errors, retries with backoff on transient failures.
+   */
+  private async _getLogsPaginated(
+    args: Parameters<PublicClient['getLogs']>[0] & { fromBlock: bigint },
+  ): Promise<Awaited<ReturnType<PublicClient['getLogs']>>> {
+    const client = this._getClient();
+    const { fromBlock, ...rest } = args;
+
+    const latestBlock = await client.getBlockNumber();
+    let cursor = fromBlock;
+    let step = 10_000n;
+    const MIN_STEP = 100n;
+    const MAX_RETRIES = 3;
+    const TIMEOUT_MS = 60_000;
+    let retryCount = 0;
+    const startTime = Date.now();
+
+    while (cursor <= latestBlock) {
+      if (Date.now() - startTime > TIMEOUT_MS) {
+        throw new Error('getLogs paginated query timed out');
+      }
+
+      const end = cursor + step > latestBlock ? latestBlock : cursor + step;
+
+      try {
+        const logs = await client.getLogs({
+          ...rest,
+          fromBlock: cursor,
+          toBlock: end,
+        } as Parameters<PublicClient['getLogs']>[0]);
+
+        if (logs.length > 0) {
+          return logs;
+        }
+        cursor = end + 1n;
+        retryCount = 0; // reset on success
+      } catch (error) {
+        if (error instanceof Error) {
+          if (
+            error.message.includes('block range') ||
+            error.message.includes('exceed maximum block range') ||
+            error.message.includes('Log response size exceeded')
+          ) {
+            step = step / 2n;
+            if (step < MIN_STEP) break;
+            continue;
+          }
+          retryCount++;
+          if (retryCount >= MAX_RETRIES) throw error;
+          await new Promise((r) => setTimeout(r, 1000 * retryCount));
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return [];
+  }
+
+  private ensureChainConfig(): ChainConfig {
+    if (!this.chainConfig) {
+      throw new Error('SDK not initialized. Call initForChain() first.');
+    }
+    return this.chainConfig;
+  }
 
   private ensureSDK(): ElytroWallet {
     if (!this.sdk) {
@@ -536,8 +981,12 @@ export class SDKService {
       maxFeePerGas: toHex(op.maxFeePerGas),
       maxPriorityFeePerGas: toHex(op.maxPriorityFeePerGas),
       paymaster: op.paymaster,
-      paymasterVerificationGasLimit: op.paymasterVerificationGasLimit ? toHex(op.paymasterVerificationGasLimit) : null,
-      paymasterPostOpGasLimit: op.paymasterPostOpGasLimit ? toHex(op.paymasterPostOpGasLimit) : null,
+      paymasterVerificationGasLimit: op.paymasterVerificationGasLimit
+        ? toHex(op.paymasterVerificationGasLimit)
+        : null,
+      paymasterPostOpGasLimit: op.paymasterPostOpGasLimit
+        ? toHex(op.paymasterPostOpGasLimit)
+        : null,
       paymasterData: op.paymasterData,
       signature: op.signature,
     };
