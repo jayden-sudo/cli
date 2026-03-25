@@ -87,14 +87,11 @@ export class X402Service {
     const initialResponse = await fetch(options.url, init);
     const initialBody = await initialResponse.text();
 
-    if (initialResponse.status !== 402) {
-      if (options.verbose) {
-        this.logDebug('Response', {
-          status: initialResponse.status,
-          headers: Object.fromEntries(initialResponse.headers.entries()),
-          body: initialBody,
-        });
-      }
+    const paymentHeader = initialResponse.headers.get(X402_HEADERS.PAYMENT_REQUIRED);
+    const is402 = initialResponse.status === 402;
+
+    // Not a payment response: no 402 status AND no PAYMENT-REQUIRED header.
+    if (!is402 && !paymentHeader) {
       if (options.verbose) {
         this.logDebug('Response', {
           status: initialResponse.status,
@@ -115,10 +112,19 @@ export class X402Service {
       };
     }
 
-    const paymentHeader = initialResponse.headers.get(X402_HEADERS.PAYMENT_REQUIRED);
+    // Payment required: decode from header (preferred), then body fallback.
+    // The header takes precedence because body-based encoding is a legacy v1
+    // pattern and some servers return non-JSON bodies alongside the header.
     const paymentRequired = paymentHeader
       ? this.decodePaymentRequired(paymentHeader)
-      : this.parsePaymentRequiredFromBody(initialBody);
+      : is402
+        ? this.parsePaymentRequiredFromBody(initialBody)
+        : (() => {
+            throw new Error(
+              `Server returned ${initialResponse.status} with a PAYMENT-REQUIRED header ` +
+                'but not a 402 status code. This is ambiguous — refusing to auto-pay.',
+            );
+          })();
 
     if (options.verbose) {
       this.logDebug('PaymentRequired', {
