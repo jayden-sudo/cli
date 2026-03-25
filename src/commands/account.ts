@@ -7,9 +7,19 @@ import type { SecurityIntent } from '../types';
 import { askSelect } from '../utils/prompt';
 import { registerAccount, requestSponsorship, applySponsorToUserOp } from '../utils/sponsor';
 import { encodeInstallHook } from '../utils/contracts/securityHook';
-import { SECURITY_HOOK_ADDRESS_MAP, DEFAULT_CAPABILITY, DEFAULT_SAFETY_DELAY } from '../constants/securityHook';
+import {
+  SECURITY_HOOK_ADDRESS_MAP,
+  DEFAULT_CAPABILITY,
+  DEFAULT_SAFETY_DELAY,
+} from '../constants/securityHook';
 import { SecurityHookService, createSignMessageForAuth } from '../services/securityHook';
-import { address as shortAddr, outputResult, outputError, sanitizeErrorMessage } from '../utils/display';
+import {
+  address as shortAddr,
+  outputResult,
+  outputError,
+  sanitizeErrorMessage,
+} from '../utils/display';
+import { checkRecoveryBlocked } from '../utils/recoveryGuard';
 
 const ERR_INVALID_PARAMS = -32602;
 const ERR_ACCOUNT_NOT_READY = -32002;
@@ -65,7 +75,10 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
       if (opts.dailyLimit !== undefined) {
         dailyLimitUsd = parseFloat(opts.dailyLimit);
         if (isNaN(dailyLimitUsd) || dailyLimitUsd < 0) {
-          outputError(ERR_INVALID_PARAMS, 'Invalid --daily-limit. Provide a positive number in USD (e.g. "100").');
+          outputError(
+            ERR_INVALID_PARAMS,
+            'Invalid --daily-limit. Provide a positive number in USD (e.g. "100").',
+          );
           return;
         }
       }
@@ -99,7 +112,7 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
           accountInfo.index,
           [paddedKey],
           guardianHash,
-          guardianSafePeriod
+          guardianSafePeriod,
         );
 
         // ─── Email binding (off-chain, async) ───────────────────
@@ -111,7 +124,7 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
             const bindingResult = await hookService.requestEmailBinding(
               accountInfo.address,
               chainId,
-              opts.email
+              opts.email,
             );
             await ctx.account.updateSecurityIntent(accountInfo.address, chainId, {
               emailBindingId: bindingResult.bindingId,
@@ -133,12 +146,8 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
           ...(securityIntent
             ? {
                 security: {
-                  ...(opts.email
-                    ? { email: opts.email, emailBindingStarted }
-                    : {}),
-                  ...(dailyLimitUsd !== undefined
-                    ? { dailyLimitUsd }
-                    : {}),
+                  ...(opts.email ? { email: opts.email, emailBindingStarted } : {}),
+                  ...(dailyLimitUsd !== undefined ? { dailyLimitUsd } : {}),
                   hookPending: true,
                 },
               }
@@ -165,9 +174,13 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
       }
 
       // 1. Resolve account
-      const identifier = target ?? ctx.account.currentAccount?.alias ?? ctx.account.currentAccount?.address;
+      const identifier =
+        target ?? ctx.account.currentAccount?.alias ?? ctx.account.currentAccount?.address;
       if (!identifier) {
-        outputError(ERR_ACCOUNT_NOT_READY, 'No account selected. Specify an alias/address or create an account first.');
+        outputError(
+          ERR_ACCOUNT_NOT_READY,
+          'No account selected. Specify an alias/address or create an account first.',
+        );
         return;
       }
 
@@ -176,6 +189,9 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
         outputError(ERR_ACCOUNT_NOT_READY, `Account "${identifier}" not found.`);
         return;
       }
+
+      // Recovery guard
+      if (checkRecoveryBlocked(accountInfo)) return;
 
       // 2. Check if already deployed
       if (accountInfo.isDeployed) {
@@ -204,7 +220,11 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
       // Determine if we should batch security hook installation
       const intent = accountInfo.securityIntent;
       const hookAddress = SECURITY_HOOK_ADDRESS_MAP[accountInfo.chainId];
-      const shouldInstallHook = !!(intent && hookAddress && (intent.email || intent.dailyLimitUsd !== undefined));
+      const shouldInstallHook = !!(
+        intent &&
+        hookAddress &&
+        (intent.email || intent.dailyLimitUsd !== undefined)
+      );
 
       try {
         // 3. Create unsigned deploy UserOp
@@ -217,7 +237,7 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
             accountInfo.address,
             hookAddress,
             DEFAULT_SAFETY_DELAY,
-            DEFAULT_CAPABILITY
+            DEFAULT_CAPABILITY,
           );
           deployCallData = installTx.data;
         }
@@ -261,7 +281,7 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
             ctx.chain.graphqlEndpoint,
             accountInfo.chainId,
             ctx.sdk.entryPoint,
-            userOp
+            userOp,
           );
 
           if (sponsorResult) {
@@ -272,11 +292,15 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
             const { ether: balance } = await ctx.walletClient.getBalance(accountInfo.address);
             if (parseFloat(balance) === 0) {
               spinner.stop();
-              outputError(ERR_SPONSOR_FAILED, `Sponsorship failed: ${sponsorError ?? 'unknown'}. Account has no ETH to pay gas.`, {
-                account: accountInfo.alias,
-                address: accountInfo.address,
-                chain: chainName,
-              });
+              outputError(
+                ERR_SPONSOR_FAILED,
+                `Sponsorship failed: ${sponsorError ?? 'unknown'}. Account has no ETH to pay gas.`,
+                {
+                  account: accountInfo.alias,
+                  address: accountInfo.address,
+                  chain: chainName,
+                },
+              );
               return;
             }
           }
@@ -318,8 +342,12 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
             sponsored,
             hookInstalled,
             ...(hookInstalled && intent?.email ? { emailPending: intent.email } : {}),
-            ...(hookInstalled && intent?.dailyLimitUsd !== undefined ? { dailyLimitPending: intent.dailyLimitUsd } : {}),
-            ...(chainConfig.blockExplorer ? { explorer: `${chainConfig.blockExplorer}/tx/${receipt.transactionHash}` } : {}),
+            ...(hookInstalled && intent?.dailyLimitUsd !== undefined
+              ? { dailyLimitPending: intent.dailyLimitUsd }
+              : {}),
+            ...(chainConfig.blockExplorer
+              ? { explorer: `${chainConfig.blockExplorer}/tx/${receipt.transactionHash}` }
+              : {}),
           });
         } else {
           outputError(ERR_REVERTED, 'UserOp included but execution reverted.', {
@@ -342,7 +370,9 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
     .argument('[account]', 'Filter by alias or address')
     .option('-c, --chain <chainId>', 'Filter by chain ID')
     .action(async (target?: string, opts?: { chain?: string }) => {
-      let accounts = opts?.chain ? ctx.account.getAccountsByChain(Number(opts.chain)) : ctx.account.allAccounts;
+      let accounts = opts?.chain
+        ? ctx.account.getAccountsByChain(Number(opts.chain))
+        : ctx.account.allAccounts;
 
       if (target) {
         const matched = ctx.account.resolveAccount(target);
@@ -379,10 +409,14 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
     .description('Show details for an account')
     .argument('[account]', 'Alias or address (default: current)')
     .action(async (target?: string) => {
-      const identifier = target ?? ctx.account.currentAccount?.alias ?? ctx.account.currentAccount?.address;
+      const identifier =
+        target ?? ctx.account.currentAccount?.alias ?? ctx.account.currentAccount?.address;
 
       if (!identifier) {
-        outputError(ERR_ACCOUNT_NOT_READY, 'No account selected. Run `elytro account create` first.');
+        outputError(
+          ERR_ACCOUNT_NOT_READY,
+          'No account selected. Run `elytro account create` first.',
+        );
         return;
       }
 
@@ -412,7 +446,9 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
           recovery: detail.isRecoveryEnabled,
           ...(detail.securityStatus ? { securityStatus: detail.securityStatus } : {}),
           ...(detail.securityIntent ? { securityIntent: detail.securityIntent } : {}),
-          ...(chainConfig?.blockExplorer ? { explorer: `${chainConfig.blockExplorer}/address/${detail.address}` } : {}),
+          ...(chainConfig?.blockExplorer
+            ? { explorer: `${chainConfig.blockExplorer}/address/${detail.address}` }
+            : {}),
         });
       } catch (err) {
         spinner.stop();
@@ -466,7 +502,7 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
           accounts.map((a) => ({
             name: `${a.alias}  ${shortAddr(a.address)}  ${chainConfig(a.chainId)?.name ?? a.chainId}`,
             value: a.alias,
-          }))
+          })),
         );
       }
 
@@ -496,7 +532,9 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
           chainId: switched.chainId,
           deployed: switched.isDeployed,
           ...(balance ? { balance } : {}),
-          ...(newChain?.blockExplorer ? { explorer: `${newChain.blockExplorer}/address/${switched.address}` } : {}),
+          ...(newChain?.blockExplorer
+            ? { explorer: `${newChain.blockExplorer}/address/${switched.address}` }
+            : {}),
         });
       } catch (err) {
         outputError(ERR_INTERNAL, (err as Error).message);
@@ -509,7 +547,10 @@ export function registerAccountCommand(program: Command, ctx: AppContext): void 
 /**
  * Create a SecurityHookService instance for off-chain operations (email binding).
  */
-function createHookServiceForAccount(ctx: AppContext, chainConfig: { id: number }): SecurityHookService {
+function createHookServiceForAccount(
+  ctx: AppContext,
+  chainConfig: { id: number },
+): SecurityHookService {
   return new SecurityHookService({
     store: ctx.store,
     graphqlEndpoint: ctx.chain.graphqlEndpoint,
@@ -519,7 +560,9 @@ function createHookServiceForAccount(ctx: AppContext, chainConfig: { id: number 
       packSignature: (rawSig, valData) => ctx.sdk.packUserOpSignature(rawSig, valData),
     }),
     readContract: async (params) => {
-      return ctx.walletClient.readContract(params as Parameters<typeof ctx.walletClient.readContract>[0]);
+      return ctx.walletClient.readContract(
+        params as Parameters<typeof ctx.walletClient.readContract>[0],
+      );
     },
     getBlockTimestamp: async () => {
       const blockNumber = await ctx.walletClient.raw.getBlockNumber();

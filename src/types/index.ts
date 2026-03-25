@@ -29,6 +29,13 @@ export interface AccountInfo {
   securityStatus?: SecurityStatus;
   /** Stored ERC-7710 delegations for x402 payments */
   delegations?: DelegationInfo[];
+  /** Non-null when this account is being recovered; blocks write operations */
+  activeRecovery?: {
+    status: RecoveryStatus;
+    newOwner: Address;
+    recoveryId: string;
+    lastCheckedAt: number;
+  } | null;
 }
 
 // ─── Security Intent (temporary, create → activate) ────────────
@@ -274,6 +281,62 @@ export interface PendingOtpState {
 
 export interface PendingOtpsStore {
   [id: string]: PendingOtpState;
+}
+
+// ─── Social Recovery ────────────────────────────────────────────────
+
+export interface RecoveryContact {
+  address: Address;
+  label?: string;
+  /** Persisted across polls: true once guardian's ApproveHash is seen on-chain. */
+  signed?: boolean;
+}
+
+export interface RecoveryContactsInfo {
+  salt: string;
+  threshold: number;
+  contacts: string[];
+}
+
+export interface RecoveryBackup {
+  address: Address;
+  chainId: number;
+  contacts: RecoveryContact[];
+  threshold: string;
+}
+
+/** Written by `recovery initiate`, read by `recovery status` */
+export interface LocalRecoveryRecord {
+  walletAddress: Address;
+  chainId: number;
+  newOwner: Address;
+  recoveryId: string;
+  approveHash: string;
+  contacts: RecoveryContact[];
+  threshold: number;
+  fromBlock: string;
+  recoveryUrl: string;
+  recoveryRecordID?: string;
+}
+
+export enum RecoveryStatus {
+  WAITING_FOR_SIGNATURE = 'WAITING_FOR_SIGNATURE',
+  SIGNATURE_COMPLETED = 'SIGNATURE_COMPLETED',
+  RECOVERY_STARTED = 'RECOVERY_STARTED',
+  RECOVERY_READY = 'RECOVERY_READY',
+  RECOVERY_COMPLETED = 'RECOVERY_COMPLETED',
+}
+
+export interface RecoveryStatusResult {
+  walletAddress: Address;
+  newOwner: Address;
+  status: RecoveryStatus;
+  contacts: Array<RecoveryContact & { signed: boolean }>;
+  signedCount: number;
+  threshold: number;
+  recoveryUrl: string;
+  validTime: number | null;
+  remainingSeconds: number | null;
 }
 
 // ─── Nullable helper ────────────────────────────────────────────────

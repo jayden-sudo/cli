@@ -6,6 +6,7 @@ import type {
   SecurityStatus,
   DelegationInfo,
 } from '../types';
+import type { RecoveryStatus } from '../types';
 import type { KeyringService } from './keyring';
 import type { SDKService } from './sdk';
 import type { ChainService } from './chain';
@@ -77,7 +78,11 @@ export class AccountService {
    * @param alias         - Optional. Human-readable name. Auto-generated if omitted.
    * @param securityIntent - Optional. Security intent (email, dailyLimit) to execute during activate.
    */
-  async createAccount(chainId: number, alias?: string, securityIntent?: SecurityIntent): Promise<AccountInfo> {
+  async createAccount(
+    chainId: number,
+    alias?: string,
+    securityIntent?: SecurityIntent,
+  ): Promise<AccountInfo> {
     const owner = this.keyring.currentOwner;
     if (!owner) {
       throw new Error('Keyring is locked. Unlock first.');
@@ -137,7 +142,9 @@ export class AccountService {
   resolveAccount(aliasOrAddress: string): AccountInfo | null {
     const needle = aliasOrAddress.toLowerCase();
     return (
-      this.state.accounts.find((a) => a.alias.toLowerCase() === needle || a.address.toLowerCase() === needle) ?? null
+      this.state.accounts.find(
+        (a) => a.alias.toLowerCase() === needle || a.address.toLowerCase() === needle,
+      ) ?? null
     );
   }
 
@@ -183,7 +190,7 @@ export class AccountService {
 
     // Check uniqueness (case-insensitive)
     const conflict = this.state.accounts.find(
-      (a) => a.alias.toLowerCase() === newAlias.toLowerCase() && a.address !== account.address
+      (a) => a.alias.toLowerCase() === newAlias.toLowerCase() && a.address !== account.address,
     );
     if (conflict) {
       throw new Error(`Alias "${newAlias}" is already taken by ${conflict.address}.`);
@@ -202,7 +209,7 @@ export class AccountService {
    */
   async markDeployed(address: Address, chainId: number): Promise<void> {
     const account = this.state.accounts.find(
-      (a) => a.address.toLowerCase() === address.toLowerCase() && a.chainId === chainId
+      (a) => a.address.toLowerCase() === address.toLowerCase() && a.chainId === chainId,
     );
     if (!account) {
       throw new Error(`Account ${address} on chain ${chainId} not found.`);
@@ -247,7 +254,11 @@ export class AccountService {
    * Patch the temporary security intent (e.g. store emailBindingId).
    * Only valid before activate — intent is deleted after activate.
    */
-  async updateSecurityIntent(address: Address, chainId: number, patch: Partial<SecurityIntent>): Promise<void> {
+  async updateSecurityIntent(
+    address: Address,
+    chainId: number,
+    patch: Partial<SecurityIntent>,
+  ): Promise<void> {
     const account = this.findAccount(address, chainId);
     account.securityIntent = { ...account.securityIntent, ...patch };
     await this.persist();
@@ -277,12 +288,56 @@ export class AccountService {
 
   private findAccount(address: Address, chainId: number): AccountInfo {
     const account = this.state.accounts.find(
-      (a) => a.address.toLowerCase() === address.toLowerCase() && a.chainId === chainId
+      (a) => a.address.toLowerCase() === address.toLowerCase() && a.chainId === chainId,
     );
     if (!account) {
       throw new Error(`Account ${address} on chain ${chainId} not found.`);
     }
     return account;
+  }
+
+  // ─── Active Recovery ──────────────────────────────────────────────
+
+  /**
+   * Set or update the activeRecovery state on an account.
+   * Used by RecoveryService to track ongoing recovery operations.
+   */
+  async updateActiveRecovery(
+    address: Address,
+    chainId: number,
+    recovery: {
+      status: RecoveryStatus;
+      newOwner: Address;
+      recoveryId: string;
+      lastCheckedAt: number;
+    },
+  ): Promise<void> {
+    const account = this.findAccount(address, chainId);
+    account.activeRecovery = recovery;
+    await this.persist();
+  }
+
+  /**
+   * Update the isRecoveryEnabled flag after contacts set/clear.
+   */
+  async updateActiveRecoveryEnabled(
+    address: Address,
+    chainId: number,
+    enabled: boolean,
+  ): Promise<void> {
+    const account = this.findAccount(address, chainId);
+    account.isRecoveryEnabled = enabled;
+    await this.persist();
+  }
+
+  /**
+   * Clear the activeRecovery state on an account.
+   * Called when recovery completes or is determined to be inactive.
+   */
+  async clearActiveRecovery(address: Address, chainId: number): Promise<void> {
+    const account = this.findAccount(address, chainId);
+    account.activeRecovery = null;
+    await this.persist();
   }
 
   // ─── Import / Export ────────────────────────────────────────────
@@ -291,7 +346,9 @@ export class AccountService {
     let imported = 0;
     for (const account of accounts) {
       const exists = this.state.accounts.some(
-        (a) => a.address.toLowerCase() === account.address.toLowerCase() && a.chainId === account.chainId
+        (a) =>
+          a.address.toLowerCase() === account.address.toLowerCase() &&
+          a.chainId === account.chainId,
       );
       if (!exists) {
         this.state.accounts.push(account);
@@ -311,8 +368,9 @@ export class AccountService {
    * Simply counts how many accounts this owner already has on this chain.
    */
   private nextIndex(owner: Address, chainId: number): number {
-    return this.state.accounts.filter((a) => a.owner.toLowerCase() === owner.toLowerCase() && a.chainId === chainId)
-      .length;
+    return this.state.accounts.filter(
+      (a) => a.owner.toLowerCase() === owner.toLowerCase() && a.chainId === chainId,
+    ).length;
   }
 
   /** Generate an alias that doesn't collide with existing ones. */
@@ -342,7 +400,10 @@ export class AccountService {
     return (account.delegations ?? []).find((d) => d.id === delegationId) ?? null;
   }
 
-  async addDelegation(aliasOrAddress: string | undefined, delegation: DelegationInfo): Promise<DelegationInfo> {
+  async addDelegation(
+    aliasOrAddress: string | undefined,
+    delegation: DelegationInfo,
+  ): Promise<DelegationInfo> {
     const account = this.requireAccount(aliasOrAddress);
     account.delegations = account.delegations ?? [];
     const exists = account.delegations.some((d) => d.id === delegation.id);
